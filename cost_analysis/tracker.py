@@ -1,452 +1,414 @@
 """
-Cost tracker for monitoring LLM API usage and costs
+Cost tracker for monitoring LLM API usage and costs in real-time.
 """
 
-import uuid
+import asyncio
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any
-import sqlite3
-from pathlib import Path
+from typing import Optional, Dict, Any, List
+import uuid
+from collections import defaultdict
 
 from cost_analysis.models import (
     TokenUsage,
     CostRecord,
     ModelType,
-    RequestType,
-    UsageSummary,
+    OperationType,
+    CostCategory,
 )
-from cost_analysis.pricing import calculate_cost
+from cost_analysis.calculator import CostCalculator
 
 
 class CostTracker:
     """
-    Tracks token usage and costs for LLM API calls.
+    Tracks token usage and costs for LLM operations.
     
-    Stores usage data in SQLite database for analysis and reporting.
+    Features:
+    - Real-time cost tracking
+    - Per-user, per-session tracking
+    - Aggregated metrics
+    - In-memory and persistent storage
     """
     
-    def __init__(self, db_path: str = "data/cost_tracking.db"):
+    def __init__(
+        self,
+        calculator: Optional[CostCalculator] = None,
+        enable_persistence: bool = True,
+        persistence_interval: int = 60,  # seconds
+    ):
         """
         Initialize cost tracker.
         
         Args:
-            db_path: Path to SQLite database file
+            calculator: Cost calculator instance
+            enable_persistence: Whether to persist data to database
+            persistence_interval: How often to persist data (seconds)
         """
-        self.db_path = db_path
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._init_database()
+        self.calculator = calculator or CostCalculator()
+        self.enable_persistence = enable_persistence
+        self.persistence_interval = persistence_interval
+        
+        # In-memory storage
+        self._token_usages: List[TokenUsage] = []
+        self._cost_records: List[CostRecord] = []
+        
+        # Aggregated metrics
+        self._metrics = {
+            "total_tokens": 0,
+            "total_cost": 0.0,
+            "total_requests": 0,
+            "by_user": defaultdict(lambda: {"tokens": 0, "cost": 0.0, "requests": 0}),
+            "by_model": defaultdict(lambda: {"tokens": 0, "cost": 0.0, "requests": 0}),
+            "by_operation": defaultdict(lambda: {"tokens": 0, "cost": 0.0, "requests": 0}),
+            "cache_hits": 0,
+            "cache_misses": 0,
+        }
+        
+        # Background persistence task
+        self._persistence_task: Optional[asyncio.Task] = None
+        self._running = False
     
-    def _init_database(self):
-        """Initialize database schema"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+    async def start(self):
+        """Start the cost tracker."""
+        if self._running:
+            return
         
-        # Token usage table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS token_usage (
-                request_id TEXT PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                model TEXT NOT NULL,
-                request_type TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL,
-                output_tokens INTEGER NOT NULL,
-                total_tokens INTEGER NOT NULL,
-                user_id TEXT,
-                session_id TEXT,
-                conversation_id TEXT,
-                agent_name TEXT,
-                metadata TEXT
-            )
-        """)
+        self._running = True
         
-        # Cost records table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS cost_records (
-                request_id TEXT PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                model TEXT NOT NULL,
-                input_cost REAL NOT NULL,
-                output_cost REAL NOT NULL,
-                total_cost REAL NOT NULL,
-                input_price_per_1k REAL NOT NULL,
-                output_price_per_1k REAL NOT NULL,
-                user_id TEXT,
-                FOREIGN KEY (request_id) REFERENCES token_usage(request_id)
-            )
-        """)
-        
-        # Indexes for faster queries
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_timestamp 
-            ON token_usage(timestamp)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_user_id 
-            ON token_usage(user_id)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_model 
-            ON token_usage(model)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_cost_timestamp 
-            ON cost_records(timestamp)
-        """)
-        
-        conn.commit()
-        conn.close()
+        if self.enable_persistence:
+            self._persistence_task = asyncio.create_task(self._persistence_loop())
     
-    def track_usage(
+    async def stop(self):
+        """Stop the cost tracker and persist remaining data."""
+        self._running = False
+        
+        if self._persistence_task:
+            self._persistence_task.cancel()
+            try:
+                await self._persistence_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Final persistence
+        if self.enable_persistence:
+            await self._persist_data()
+    
+    async def track_usage(
         self,
-        model: ModelType,
-        request_type: RequestType,
-        input_tokens: int,
-        output_tokens: int,
+        model_type: ModelType,
+        operation_type: OperationType,
+        prompt_tokens: int,
+        completion_tokens: int = 0,
+        cached_tokens: int = 0,
+        duration_ms: float = 0.0,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
-        agent_name: Optional[str] = None,
+        api_key_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-    ) -> CostRecord:
+    ) -> tuple[TokenUsage, CostRecord]:
         """
         Track token usage and calculate cost.
         
         Args:
-            model: LLM model used
-            request_type: Type of request
-            input_tokens: Number of input tokens
-            output_tokens: Number of output tokens
-            user_id: User identifier (optional)
-            session_id: Session identifier (optional)
-            conversation_id: Conversation identifier (optional)
-            agent_name: Agent that made the request (optional)
-            metadata: Additional metadata (optional)
+            model_type: Model used
+            operation_type: Type of operation
+            prompt_tokens: Input tokens
+            completion_tokens: Output tokens
+            cached_tokens: Tokens served from cache
+            duration_ms: Operation duration
+            user_id: User identifier
+            session_id: Session identifier
+            api_key_id: API key used
+            metadata: Additional metadata
         
         Returns:
-            CostRecord with usage and cost information
+            Tuple of (TokenUsage, CostRecord)
         """
-        # Create usage record
-        usage = TokenUsage(
-            request_id=str(uuid.uuid4()),
+        operation_id = str(uuid.uuid4())
+        
+        # Create token usage record
+        token_usage = TokenUsage(
+            operation_id=operation_id,
+            model_type=model_type,
+            operation_type=operation_type,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            cached_tokens=cached_tokens,
             timestamp=datetime.utcnow(),
-            model=model,
-            request_type=request_type,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=input_tokens + output_tokens,
+            duration_ms=duration_ms,
             user_id=user_id,
             session_id=session_id,
-            conversation_id=conversation_id,
-            agent_name=agent_name,
+            api_key_id=api_key_id,
             metadata=metadata or {},
         )
         
         # Calculate cost
-        cost_data = calculate_cost(
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
+        cost_record = await self.calculator.calculate_cost(token_usage)
         
-        # Create cost record
-        cost_record = CostRecord(
-            usage=usage,
-            input_cost=cost_data["input_cost"],
-            output_cost=cost_data["output_cost"],
-            total_cost=cost_data["total_cost"],
-            input_price_per_1k=cost_data["input_price_per_1k"],
-            output_price_per_1k=cost_data["output_price_per_1k"],
-        )
+        # Store in memory
+        self._token_usages.append(token_usage)
+        self._cost_records.append(cost_record)
         
-        # Save to database
-        self._save_record(cost_record)
+        # Update metrics
+        await self._update_metrics(token_usage, cost_record)
         
-        return cost_record
+        return token_usage, cost_record
     
-    def _save_record(self, record: CostRecord):
-        """Save cost record to database"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+    async def _update_metrics(self, token_usage: TokenUsage, cost_record: CostRecord):
+        """Update aggregated metrics."""
+        # Total metrics
+        self._metrics["total_tokens"] += token_usage.total_tokens
+        self._metrics["total_cost"] += cost_record.total_cost
+        self._metrics["total_requests"] += 1
         
-        # Save usage
-        import json
-        cursor.execute("""
-            INSERT INTO token_usage (
-                request_id, timestamp, model, request_type,
-                input_tokens, output_tokens, total_tokens,
-                user_id, session_id, conversation_id, agent_name, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            record.usage.request_id,
-            record.usage.timestamp.isoformat(),
-            record.usage.model.value,
-            record.usage.request_type.value,
-            record.usage.input_tokens,
-            record.usage.output_tokens,
-            record.usage.total_tokens,
-            record.usage.user_id,
-            record.usage.session_id,
-            record.usage.conversation_id,
-            record.usage.agent_name,
-            json.dumps(record.usage.metadata),
-        ))
+        # By user
+        if token_usage.user_id:
+            user_metrics = self._metrics["by_user"][token_usage.user_id]
+            user_metrics["tokens"] += token_usage.total_tokens
+            user_metrics["cost"] += cost_record.total_cost
+            user_metrics["requests"] += 1
         
-        # Save cost
-        cursor.execute("""
-            INSERT INTO cost_records (
-                request_id, timestamp, model,
-                input_cost, output_cost, total_cost,
-                input_price_per_1k, output_price_per_1k, user_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            record.usage.request_id,
-            record.usage.timestamp.isoformat(),
-            record.usage.model.value,
-            record.input_cost,
-            record.output_cost,
-            record.total_cost,
-            record.input_price_per_1k,
-            record.output_price_per_1k,
-            record.usage.user_id,
-        ))
+        # By model
+        model_metrics = self._metrics["by_model"][token_usage.model_type.value]
+        model_metrics["tokens"] += token_usage.total_tokens
+        model_metrics["cost"] += cost_record.total_cost
+        model_metrics["requests"] += 1
         
-        conn.commit()
-        conn.close()
+        # By operation
+        op_metrics = self._metrics["by_operation"][token_usage.operation_type.value]
+        op_metrics["tokens"] += token_usage.total_tokens
+        op_metrics["cost"] += cost_record.total_cost
+        op_metrics["requests"] += 1
+        
+        # Cache metrics
+        if token_usage.cached_tokens > 0:
+            self._metrics["cache_hits"] += 1
+        else:
+            self._metrics["cache_misses"] += 1
     
-    def get_usage_summary(
+    def get_metrics(
         self,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        user_id: Optional[str] = None,
-        model: Optional[ModelType] = None,
-    ) -> UsageSummary:
+        period_start: Optional[datetime] = None,
+        period_end: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
         """
-        Get usage summary for a time period.
+        Get aggregated metrics.
         
         Args:
-            start_time: Start of time period (default: 24 hours ago)
-            end_time: End of time period (default: now)
-            user_id: Filter by user (optional)
-            model: Filter by model (optional)
+            period_start: Start of period (None for all time)
+            period_end: End of period (None for now)
         
         Returns:
-            UsageSummary with aggregated statistics
+            Dictionary of metrics
         """
-        if start_time is None:
-            start_time = datetime.utcnow() - timedelta(days=1)
-        if end_time is None:
-            end_time = datetime.utcnow()
+        if period_start is None and period_end is None:
+            # Return current metrics
+            return {
+                "total_tokens": self._metrics["total_tokens"],
+                "total_cost": self._metrics["total_cost"],
+                "total_requests": self._metrics["total_requests"],
+                "avg_cost_per_request": (
+                    self._metrics["total_cost"] / self._metrics["total_requests"]
+                    if self._metrics["total_requests"] > 0
+                    else 0.0
+                ),
+                "avg_tokens_per_request": (
+                    self._metrics["total_tokens"] / self._metrics["total_requests"]
+                    if self._metrics["total_requests"] > 0
+                    else 0.0
+                ),
+                "cache_hit_rate": (
+                    self._metrics["cache_hits"]
+                    / (self._metrics["cache_hits"] + self._metrics["cache_misses"])
+                    if (self._metrics["cache_hits"] + self._metrics["cache_misses"]) > 0
+                    else 0.0
+                ),
+                "by_user": dict(self._metrics["by_user"]),
+                "by_model": dict(self._metrics["by_model"]),
+                "by_operation": dict(self._metrics["by_operation"]),
+            }
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        # Filter by period
+        filtered_usages = [
+            usage
+            for usage in self._token_usages
+            if (period_start is None or usage.timestamp >= period_start)
+            and (period_end is None or usage.timestamp <= period_end)
+        ]
         
-        # Build query
-        query = """
-            SELECT 
-                u.model,
-                u.request_type,
-                u.user_id,
-                COUNT(*) as request_count,
-                SUM(u.input_tokens) as total_input,
-                SUM(u.output_tokens) as total_output,
-                SUM(u.total_tokens) as total_tokens,
-                SUM(c.total_cost) as total_cost
-            FROM token_usage u
-            JOIN cost_records c ON u.request_id = c.request_id
-            WHERE u.timestamp >= ? AND u.timestamp <= ?
-        """
-        params = [start_time.isoformat(), end_time.isoformat()]
+        filtered_costs = [
+            cost
+            for cost in self._cost_records
+            if (period_start is None or cost.timestamp >= period_start)
+            and (period_end is None or cost.timestamp <= period_end)
+        ]
         
-        if user_id:
-            query += " AND u.user_id = ?"
-            params.append(user_id)
+        # Calculate metrics for period
+        total_tokens = sum(usage.total_tokens for usage in filtered_usages)
+        total_cost = sum(cost.total_cost for cost in filtered_costs)
+        total_requests = len(filtered_usages)
         
-        if model:
-            query += " AND u.model = ?"
-            params.append(model.value)
+        cache_hits = sum(1 for usage in filtered_usages if usage.cached_tokens > 0)
+        cache_misses = total_requests - cache_hits
         
-        query += " GROUP BY u.model, u.request_type, u.user_id"
-        
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        
-        # Aggregate results
-        summary = UsageSummary(
-            start_time=start_time,
-            end_time=end_time,
-        )
-        
-        for row in rows:
-            model_str, request_type_str, uid, count, inp, out, total, cost = row
-            
-            summary.total_requests += count
-            summary.input_tokens += inp
-            summary.output_tokens += out
-            summary.total_tokens += total
-            summary.total_cost += cost
-            
-            # By request type
-            req_type = RequestType(request_type_str)
-            summary.requests_by_type[req_type] = summary.requests_by_type.get(req_type, 0) + count
-            
-            # By model
-            model_enum = ModelType(model_str)
-            summary.requests_by_model[model_enum] = summary.requests_by_model.get(model_enum, 0) + count
-            summary.tokens_by_model[model_enum] = summary.tokens_by_model.get(model_enum, 0) + total
-            summary.cost_by_model[model_enum] = summary.cost_by_model.get(model_enum, 0) + cost
-            
-            # By user
-            if uid:
-                summary.cost_by_user[uid] = summary.cost_by_user.get(uid, 0) + cost
-        
-        # Calculate averages
-        if summary.total_requests > 0:
-            summary.avg_tokens_per_request = summary.total_tokens / summary.total_requests
-            summary.avg_cost_per_request = summary.total_cost / summary.total_requests
-        
-        conn.close()
-        return summary
+        return {
+            "period_start": period_start,
+            "period_end": period_end,
+            "total_tokens": total_tokens,
+            "total_cost": total_cost,
+            "total_requests": total_requests,
+            "avg_cost_per_request": total_cost / total_requests if total_requests > 0 else 0.0,
+            "avg_tokens_per_request": total_tokens / total_requests if total_requests > 0 else 0.0,
+            "cache_hit_rate": cache_hits / total_requests if total_requests > 0 else 0.0,
+        }
     
-    def get_recent_requests(
+    def get_user_metrics(self, user_id: str) -> Dict[str, Any]:
+        """Get metrics for a specific user."""
+        return self._metrics["by_user"].get(user_id, {
+            "tokens": 0,
+            "cost": 0.0,
+            "requests": 0,
+        })
+    
+    def get_recent_operations(
         self,
         limit: int = 100,
         user_id: Optional[str] = None,
-    ) -> List[CostRecord]:
+    ) -> List[tuple[TokenUsage, CostRecord]]:
         """
-        Get recent cost records.
+        Get recent operations.
         
         Args:
-            limit: Maximum number of records to return
-            user_id: Filter by user (optional)
+            limit: Maximum number of operations to return
+            user_id: Filter by user ID
         
         Returns:
-            List of recent CostRecord objects
+            List of (TokenUsage, CostRecord) tuples
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        # Combine token usage and cost records
+        operations = list(zip(self._token_usages, self._cost_records))
         
-        query = """
-            SELECT 
-                u.request_id, u.timestamp, u.model, u.request_type,
-                u.input_tokens, u.output_tokens, u.total_tokens,
-                u.user_id, u.session_id, u.conversation_id, u.agent_name,
-                c.input_cost, c.output_cost, c.total_cost,
-                c.input_price_per_1k, c.output_price_per_1k
-            FROM token_usage u
-            JOIN cost_records c ON u.request_id = c.request_id
-            WHERE 1=1
-        """
-        params = []
-        
+        # Filter by user if specified
         if user_id:
-            query += " AND u.user_id = ?"
-            params.append(user_id)
+            operations = [
+                (usage, cost)
+                for usage, cost in operations
+                if usage.user_id == user_id
+            ]
         
-        query += " ORDER BY u.timestamp DESC LIMIT ?"
-        params.append(limit)
+        # Sort by timestamp (most recent first)
+        operations.sort(key=lambda x: x[0].timestamp, reverse=True)
         
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        
-        records = []
-        for row in rows:
-            usage = TokenUsage(
-                request_id=row[0],
-                timestamp=datetime.fromisoformat(row[1]),
-                model=ModelType(row[2]),
-                request_type=RequestType(row[3]),
-                input_tokens=row[4],
-                output_tokens=row[5],
-                total_tokens=row[6],
-                user_id=row[7],
-                session_id=row[8],
-                conversation_id=row[9],
-                agent_name=row[10],
-            )
-            
-            record = CostRecord(
-                usage=usage,
-                input_cost=row[11],
-                output_cost=row[12],
-                total_cost=row[13],
-                input_price_per_1k=row[14],
-                output_price_per_1k=row[15],
-            )
-            records.append(record)
-        
-        conn.close()
-        return records
+        return operations[:limit]
     
-    def get_total_cost(
+    async def reset_metrics(self):
+        """Reset all metrics (useful for testing)."""
+        self._token_usages.clear()
+        self._cost_records.clear()
+        self._metrics = {
+            "total_tokens": 0,
+            "total_cost": 0.0,
+            "total_requests": 0,
+            "by_user": defaultdict(lambda: {"tokens": 0, "cost": 0.0, "requests": 0}),
+            "by_model": defaultdict(lambda: {"tokens": 0, "cost": 0.0, "requests": 0}),
+            "by_operation": defaultdict(lambda: {"tokens": 0, "cost": 0.0, "requests": 0}),
+            "cache_hits": 0,
+            "cache_misses": 0,
+        }
+    
+    async def _persistence_loop(self):
+        """Background loop for persisting data."""
+        while self._running:
+            try:
+                await asyncio.sleep(self.persistence_interval)
+                await self._persist_data()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Error in persistence loop: {e}")
+    
+    async def _persist_data(self):
+        """Persist data to database."""
+        # TODO: Implement database persistence
+        # This would save token_usages and cost_records to a database
+        pass
+    
+    def export_data(
         self,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        user_id: Optional[str] = None,
-    ) -> float:
+        period_start: Optional[datetime] = None,
+        period_end: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
         """
-        Get total cost for a time period.
+        Export data for analysis.
         
         Args:
-            start_time: Start of time period (default: beginning of time)
-            end_time: End of time period (default: now)
-            user_id: Filter by user (optional)
+            period_start: Start of period
+            period_end: End of period
         
         Returns:
-            Total cost in USD
+            Dictionary with token usages and cost records
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        # Filter by period
+        filtered_usages = [
+            usage
+            for usage in self._token_usages
+            if (period_start is None or usage.timestamp >= period_start)
+            and (period_end is None or usage.timestamp <= period_end)
+        ]
         
-        query = """
-            SELECT SUM(c.total_cost)
-            FROM cost_records c
-            JOIN token_usage u ON c.request_id = u.request_id
-            WHERE 1=1
-        """
-        params = []
+        filtered_costs = [
+            cost
+            for cost in self._cost_records
+            if (period_start is None or cost.timestamp >= period_start)
+            and (period_end is None or cost.timestamp <= period_end)
+        ]
         
-        if start_time:
-            query += " AND c.timestamp >= ?"
-            params.append(start_time.isoformat())
-        
-        if end_time:
-            query += " AND c.timestamp <= ?"
-            params.append(end_time.isoformat())
-        
-        if user_id:
-            query += " AND u.user_id = ?"
-            params.append(user_id)
-        
-        cursor.execute(query, params)
-        result = cursor.fetchone()
-        
-        conn.close()
-        return result[0] if result[0] is not None else 0.0
+        return {
+            "period_start": period_start.isoformat() if period_start else None,
+            "period_end": period_end.isoformat() if period_end else None,
+            "token_usages": [usage.dict() for usage in filtered_usages],
+            "cost_records": [cost.dict() for cost in filtered_costs],
+            "summary": self.get_metrics(period_start, period_end),
+        }
+
+
+# Global cost tracker instance
+_global_tracker: Optional[CostTracker] = None
+
+
+def get_cost_tracker() -> CostTracker:
+    """Get the global cost tracker instance."""
+    global _global_tracker
+    if _global_tracker is None:
+        _global_tracker = CostTracker()
+    return _global_tracker
+
+
+async def track_operation(
+    model_type: ModelType,
+    operation_type: OperationType,
+    prompt_tokens: int,
+    completion_tokens: int = 0,
+    **kwargs,
+) -> tuple[TokenUsage, CostRecord]:
+    """
+    Convenience function to track an operation.
     
-    def cleanup_old_records(self, days: int = 90):
-        """
-        Delete records older than specified days.
-        
-        Args:
-            days: Number of days to retain
-        """
-        cutoff_date = datetime.utcnow() - timedelta(days=days)
-        
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            DELETE FROM cost_records
-            WHERE timestamp < ?
-        """, (cutoff_date.isoformat(),))
-        
-        cursor.execute("""
-            DELETE FROM token_usage
-            WHERE timestamp < ?
-        """, (cutoff_date.isoformat(),))
-        
-        deleted = cursor.rowcount
-        conn.commit()
-        conn.close()
-        
-        return deleted
+    Args:
+        model_type: Model used
+        operation_type: Type of operation
+        prompt_tokens: Input tokens
+        completion_tokens: Output tokens
+        **kwargs: Additional arguments for track_usage
+    
+    Returns:
+        Tuple of (TokenUsage, CostRecord)
+    """
+    tracker = get_cost_tracker()
+    return await tracker.track_usage(
+        model_type=model_type,
+        operation_type=operation_type,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        **kwargs,
+    )

@@ -1,350 +1,298 @@
 """
-Cost calculator for estimating and analyzing costs
+Cost calculator for LLM API usage.
+
+Provides accurate cost calculations based on current pricing models.
 """
 
-from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
+from typing import Dict, Optional
+import uuid
 
-from cost_analysis.models import ModelType, TokenUsage, CostRecord
-from cost_analysis.pricing import (
-    calculate_cost,
-    estimate_monthly_cost,
-    PRICING,
-    USAGE_ESTIMATES,
+from cost_analysis.models import (
+    TokenUsage,
+    CostRecord,
+    ModelType,
+    CostCategory,
 )
 
 
-class PricingModel:
-    """
-    Pricing model for cost calculations.
-    """
-    
-    def __init__(self):
-        """Initialize pricing model"""
-        self.pricing = PRICING
-    
-    def get_price_per_1k_tokens(
-        self,
-        model: ModelType,
-        token_type: str = "input"
-    ) -> float:
-        """
-        Get price per 1K tokens for a model.
-        
-        Args:
-            model: Model type
-            token_type: "input" or "output"
-        
-        Returns:
-            Price per 1K tokens in USD
-        """
-        pricing = self.pricing.get(model, self.pricing[ModelType.GEMINI_2_FLASH])
-        return pricing.get(f"{token_type}_per_1k", 0.0)
-    
-    def calculate_request_cost(
-        self,
-        model: ModelType,
-        input_tokens: int,
-        output_tokens: int,
-    ) -> float:
-        """
-        Calculate cost for a single request.
-        
-        Args:
-            model: Model type
-            input_tokens: Number of input tokens
-            output_tokens: Number of output tokens
-        
-        Returns:
-            Total cost in USD
-        """
-        cost_data = calculate_cost(model, input_tokens, output_tokens)
-        return cost_data["total_cost"]
-    
-    def estimate_cost_for_pattern(
-        self,
-        model: ModelType,
-        pattern_name: str = "medium"
-    ) -> Dict:
-        """
-        Estimate monthly cost for a usage pattern.
-        
-        Args:
-            model: Model type
-            pattern_name: Usage pattern name (light/medium/heavy/enterprise)
-        
-        Returns:
-            Dictionary with cost estimates
-        """
-        pattern = USAGE_ESTIMATES.get(pattern_name, USAGE_ESTIMATES["medium"])
-        
-        return estimate_monthly_cost(
-            model=model,
-            requests_per_day=pattern["requests_per_day"],
-            avg_input_tokens=pattern["avg_input_tokens"],
-            avg_output_tokens=pattern["avg_output_tokens"],
-        )
-    
-    def compare_model_costs(
-        self,
-        input_tokens: int,
-        output_tokens: int,
-        models: Optional[List[ModelType]] = None,
-    ) -> Dict[ModelType, Dict]:
-        """
-        Compare costs across different models.
-        
-        Args:
-            input_tokens: Number of input tokens
-            output_tokens: Number of output tokens
-            models: List of models to compare (default: all)
-        
-        Returns:
-            Dictionary mapping model to cost breakdown
-        """
-        if models is None:
-            models = list(ModelType)
-        
-        comparison = {}
-        for model in models:
-            cost_data = calculate_cost(model, input_tokens, output_tokens)
-            comparison[model] = cost_data
-        
-        return comparison
+# Pricing per 1M tokens (as of 2026)
+# These are example prices - update with actual pricing
+PRICING_PER_MILLION_TOKENS = {
+    ModelType.GEMINI_FLASH: {
+        "prompt": 0.075,  # $0.075 per 1M input tokens
+        "completion": 0.30,  # $0.30 per 1M output tokens
+    },
+    ModelType.GEMINI_PRO: {
+        "prompt": 1.25,  # $1.25 per 1M input tokens
+        "completion": 5.00,  # $5.00 per 1M output tokens
+    },
+    ModelType.GEMINI_ULTRA: {
+        "prompt": 5.00,  # $5.00 per 1M input tokens
+        "completion": 20.00,  # $20.00 per 1M output tokens
+    },
+    ModelType.EMBEDDING: {
+        "prompt": 0.025,  # $0.025 per 1M tokens
+        "completion": 0.0,  # Embeddings don't have completion tokens
+    },
+}
+
+# Cache discount (tokens served from cache cost less)
+CACHE_DISCOUNT = 0.5  # 50% discount for cached tokens
 
 
 class CostCalculator:
     """
-    Advanced cost calculator with analytics and projections.
+    Calculates costs for LLM operations based on token usage.
+    
+    Features:
+    - Accurate pricing per model
+    - Cache cost savings calculation
+    - Custom pricing support
+    - Currency conversion (future)
     """
     
-    def __init__(self):
-        """Initialize cost calculator"""
-        self.pricing_model = PricingModel()
-    
-    def calculate_projected_cost(
+    def __init__(
         self,
-        historical_usage: List[CostRecord],
-        projection_days: int = 30,
-    ) -> Dict:
+        pricing: Optional[Dict[ModelType, Dict[str, float]]] = None,
+        currency: str = "USD",
+    ):
         """
-        Project future costs based on historical usage.
+        Initialize cost calculator.
         
         Args:
-            historical_usage: List of historical cost records
-            projection_days: Number of days to project
+            pricing: Custom pricing table (None for default)
+            currency: Currency code
+        """
+        self.pricing = pricing or PRICING_PER_MILLION_TOKENS
+        self.currency = currency
+    
+    async def calculate_cost(
+        self,
+        token_usage: TokenUsage,
+        category: Optional[CostCategory] = None,
+    ) -> CostRecord:
+        """
+        Calculate cost for token usage.
+        
+        Args:
+            token_usage: Token usage record
+            category: Cost category (auto-detected if None)
         
         Returns:
-            Dictionary with projected costs
+            Cost record with calculated costs
         """
-        if not historical_usage:
-            return {
-                "projected_cost": 0.0,
-                "daily_avg": 0.0,
-                "confidence": "low",
-            }
+        # Get pricing for model
+        model_pricing = self.pricing.get(token_usage.model_type)
+        if model_pricing is None:
+            raise ValueError(f"No pricing found for model: {token_usage.model_type}")
         
-        # Calculate daily average from historical data
-        total_cost = sum(record.total_cost for record in historical_usage)
+        # Calculate prompt cost
+        prompt_cost = self._calculate_token_cost(
+            tokens=token_usage.prompt_tokens,
+            price_per_million=model_pricing["prompt"],
+        )
         
-        # Calculate time span of historical data
-        timestamps = [record.usage.timestamp for record in historical_usage]
-        time_span = (max(timestamps) - min(timestamps)).days + 1
+        # Calculate completion cost
+        completion_cost = self._calculate_token_cost(
+            tokens=token_usage.completion_tokens,
+            price_per_million=model_pricing["completion"],
+        )
         
-        daily_avg = total_cost / time_span if time_span > 0 else total_cost
-        projected_cost = daily_avg * projection_days
+        # Calculate cache savings
+        cached_cost_savings = 0.0
+        if token_usage.cached_tokens > 0:
+            cached_cost_savings = self._calculate_token_cost(
+                tokens=token_usage.cached_tokens,
+                price_per_million=model_pricing["prompt"],
+            ) * CACHE_DISCOUNT
         
-        # Confidence based on amount of historical data
-        confidence = "low"
-        if len(historical_usage) > 100:
-            confidence = "high"
-        elif len(historical_usage) > 30:
-            confidence = "medium"
+        # Determine category
+        if category is None:
+            if token_usage.model_type == ModelType.EMBEDDING:
+                category = CostCategory.LLM_EMBEDDING
+            else:
+                category = CostCategory.LLM_GENERATION
+        
+        # Create cost record
+        cost_record = CostRecord(
+            record_id=str(uuid.uuid4()),
+            token_usage=token_usage,
+            category=category,
+            prompt_cost=prompt_cost,
+            completion_cost=completion_cost,
+            total_cost=prompt_cost + completion_cost,
+            cached_cost_savings=cached_cost_savings,
+            currency=self.currency,
+            timestamp=datetime.utcnow(),
+            tags={},
+        )
+        
+        return cost_record
+    
+    def _calculate_token_cost(self, tokens: int, price_per_million: float) -> float:
+        """
+        Calculate cost for tokens.
+        
+        Args:
+            tokens: Number of tokens
+            price_per_million: Price per 1M tokens
+        
+        Returns:
+            Cost in currency
+        """
+        return (tokens / 1_000_000) * price_per_million
+    
+    def estimate_cost(
+        self,
+        model_type: ModelType,
+        prompt_tokens: int,
+        completion_tokens: int = 0,
+    ) -> float:
+        """
+        Estimate cost without creating records.
+        
+        Args:
+            model_type: Model to use
+            prompt_tokens: Input tokens
+            completion_tokens: Output tokens
+        
+        Returns:
+            Estimated cost
+        """
+        model_pricing = self.pricing.get(model_type)
+        if model_pricing is None:
+            return 0.0
+        
+        prompt_cost = self._calculate_token_cost(prompt_tokens, model_pricing["prompt"])
+        completion_cost = self._calculate_token_cost(completion_tokens, model_pricing["completion"])
+        
+        return prompt_cost + completion_cost
+    
+    def get_pricing_info(self, model_type: ModelType) -> Dict[str, float]:
+        """
+        Get pricing information for a model.
+        
+        Args:
+            model_type: Model type
+        
+        Returns:
+            Dictionary with pricing per 1M tokens
+        """
+        return self.pricing.get(model_type, {})
+    
+    def compare_models(
+        self,
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> Dict[ModelType, float]:
+        """
+        Compare costs across different models.
+        
+        Args:
+            prompt_tokens: Input tokens
+            completion_tokens: Output tokens
+        
+        Returns:
+            Dictionary mapping models to costs
+        """
+        comparison = {}
+        
+        for model_type in [ModelType.GEMINI_FLASH, ModelType.GEMINI_PRO, ModelType.GEMINI_ULTRA]:
+            cost = self.estimate_cost(model_type, prompt_tokens, completion_tokens)
+            comparison[model_type] = cost
+        
+        return comparison
+    
+    def calculate_monthly_projection(
+        self,
+        daily_requests: int,
+        avg_prompt_tokens: int,
+        avg_completion_tokens: int,
+        model_type: ModelType,
+    ) -> Dict[str, float]:
+        """
+        Project monthly costs based on usage patterns.
+        
+        Args:
+            daily_requests: Average requests per day
+            avg_prompt_tokens: Average prompt tokens per request
+            avg_completion_tokens: Average completion tokens per request
+            model_type: Model to use
+        
+        Returns:
+            Dictionary with projections
+        """
+        # Calculate cost per request
+        cost_per_request = self.estimate_cost(
+            model_type=model_type,
+            prompt_tokens=avg_prompt_tokens,
+            completion_tokens=avg_completion_tokens,
+        )
+        
+        # Project costs
+        daily_cost = cost_per_request * daily_requests
+        monthly_cost = daily_cost * 30
+        yearly_cost = daily_cost * 365
         
         return {
-            "projected_cost": round(projected_cost, 2),
-            "daily_avg": round(daily_avg, 2),
-            "historical_days": time_span,
-            "historical_requests": len(historical_usage),
-            "projection_days": projection_days,
-            "confidence": confidence,
+            "cost_per_request": cost_per_request,
+            "daily_cost": daily_cost,
+            "monthly_cost": monthly_cost,
+            "yearly_cost": yearly_cost,
+            "total_daily_tokens": (avg_prompt_tokens + avg_completion_tokens) * daily_requests,
         }
     
-    def calculate_cost_breakdown(
-        self,
-        usage_records: List[CostRecord],
-    ) -> Dict:
-        """
-        Calculate detailed cost breakdown.
-        
-        Args:
-            usage_records: List of cost records
-        
-        Returns:
-            Dictionary with cost breakdown by various dimensions
-        """
-        breakdown = {
-            "total_cost": 0.0,
-            "by_model": {},
-            "by_request_type": {},
-            "by_agent": {},
-            "by_user": {},
-            "by_date": {},
-        }
-        
-        for record in usage_records:
-            cost = record.total_cost
-            breakdown["total_cost"] += cost
-            
-            # By model
-            model = record.usage.model
-            breakdown["by_model"][model] = breakdown["by_model"].get(model, 0.0) + cost
-            
-            # By request type
-            req_type = record.usage.request_type
-            breakdown["by_request_type"][req_type] = breakdown["by_request_type"].get(req_type, 0.0) + cost
-            
-            # By agent
-            if record.usage.agent_name:
-                agent = record.usage.agent_name
-                breakdown["by_agent"][agent] = breakdown["by_agent"].get(agent, 0.0) + cost
-            
-            # By user
-            if record.usage.user_id:
-                user = record.usage.user_id
-                breakdown["by_user"][user] = breakdown["by_user"].get(user, 0.0) + cost
-            
-            # By date
-            date = record.usage.timestamp.date().isoformat()
-            breakdown["by_date"][date] = breakdown["by_date"].get(date, 0.0) + cost
-        
-        # Round all values
-        breakdown["total_cost"] = round(breakdown["total_cost"], 6)
-        for category in ["by_model", "by_request_type", "by_agent", "by_user", "by_date"]:
-            breakdown[category] = {k: round(v, 6) for k, v in breakdown[category].items()}
-        
-        return breakdown
-    
-    def calculate_savings_opportunity(
+    def calculate_break_even(
         self,
         current_model: ModelType,
-        current_usage: List[CostRecord],
         alternative_model: ModelType,
-    ) -> Dict:
+        monthly_requests: int,
+        avg_prompt_tokens: int,
+        avg_completion_tokens: int,
+        migration_cost: float = 0.0,
+    ) -> Dict[str, any]:
         """
-        Calculate potential savings by switching models.
+        Calculate break-even analysis for switching models.
         
         Args:
-            current_model: Current model being used
-            current_usage: Usage records with current model
-            alternative_model: Alternative model to compare
+            current_model: Current model
+            alternative_model: Alternative model to consider
+            monthly_requests: Monthly request volume
+            avg_prompt_tokens: Average prompt tokens
+            avg_completion_tokens: Average completion tokens
+            migration_cost: One-time migration cost
         
         Returns:
-            Dictionary with savings analysis
+            Break-even analysis
         """
-        current_cost = sum(record.total_cost for record in current_usage)
+        # Calculate costs for both models
+        current_cost = self.estimate_cost(current_model, avg_prompt_tokens, avg_completion_tokens)
+        alternative_cost = self.estimate_cost(alternative_model, avg_prompt_tokens, avg_completion_tokens)
         
-        # Calculate cost with alternative model
-        alternative_cost = 0.0
-        for record in current_usage:
-            alt_cost_data = calculate_cost(
-                model=alternative_model,
-                input_tokens=record.usage.input_tokens,
-                output_tokens=record.usage.output_tokens,
-            )
-            alternative_cost += alt_cost_data["total_cost"]
+        current_monthly = current_cost * monthly_requests
+        alternative_monthly = alternative_cost * monthly_requests
         
-        savings = current_cost - alternative_cost
-        savings_percentage = (savings / current_cost * 100) if current_cost > 0 else 0
+        monthly_savings = current_monthly - alternative_monthly
         
-        return {
-            "current_model": current_model,
-            "current_cost": round(current_cost, 6),
-            "alternative_model": alternative_model,
-            "alternative_cost": round(alternative_cost, 6),
-            "savings": round(savings, 6),
-            "savings_percentage": round(savings_percentage, 2),
-            "recommendation": "switch" if savings > 0 else "keep_current",
-        }
-    
-    def calculate_roi(
-        self,
-        implementation_cost: float,
-        monthly_savings: float,
-    ) -> Dict:
-        """
-        Calculate return on investment for optimization.
-        
-        Args:
-            implementation_cost: One-time cost to implement
-            monthly_savings: Expected monthly savings
-        
-        Returns:
-            Dictionary with ROI analysis
-        """
+        # Calculate break-even
         if monthly_savings <= 0:
-            return {
-                "roi": -100,
-                "payback_months": float('inf'),
-                "yearly_savings": 0,
-            }
-        
-        yearly_savings = monthly_savings * 12
-        roi = ((yearly_savings - implementation_cost) / implementation_cost * 100) if implementation_cost > 0 else float('inf')
-        payback_months = implementation_cost / monthly_savings if monthly_savings > 0 else float('inf')
+            break_even_months = float('inf')
+        else:
+            break_even_months = migration_cost / monthly_savings
         
         return {
-            "implementation_cost": implementation_cost,
-            "monthly_savings": round(monthly_savings, 2),
-            "yearly_savings": round(yearly_savings, 2),
-            "roi_percentage": round(roi, 2),
-            "payback_months": round(payback_months, 1),
-            "recommendation": "proceed" if payback_months < 12 else "evaluate",
+            "current_model": current_model.value,
+            "current_monthly_cost": current_monthly,
+            "alternative_model": alternative_model.value,
+            "alternative_monthly_cost": alternative_monthly,
+            "monthly_savings": monthly_savings,
+            "yearly_savings": monthly_savings * 12,
+            "migration_cost": migration_cost,
+            "break_even_months": break_even_months,
+            "recommendation": (
+                f"Switch to {alternative_model.value}"
+                if monthly_savings > 0 and break_even_months < 6
+                else f"Keep {current_model.value}"
+            ),
         }
-    
-    def calculate_cost_per_user(
-        self,
-        usage_records: List[CostRecord],
-    ) -> Dict[str, Dict]:
-        """
-        Calculate cost per user with statistics.
-        
-        Args:
-            usage_records: List of cost records
-        
-        Returns:
-            Dictionary mapping user_id to usage statistics
-        """
-        user_stats = {}
-        
-        for record in usage_records:
-            if not record.usage.user_id:
-                continue
-            
-            user_id = record.usage.user_id
-            if user_id not in user_stats:
-                user_stats[user_id] = {
-                    "total_cost": 0.0,
-                    "request_count": 0,
-                    "total_tokens": 0,
-                    "avg_cost_per_request": 0.0,
-                    "avg_tokens_per_request": 0.0,
-                }
-            
-            stats = user_stats[user_id]
-            stats["total_cost"] += record.total_cost
-            stats["request_count"] += 1
-            stats["total_tokens"] += record.usage.total_tokens
-        
-        # Calculate averages
-        for user_id, stats in user_stats.items():
-            if stats["request_count"] > 0:
-                stats["avg_cost_per_request"] = stats["total_cost"] / stats["request_count"]
-                stats["avg_tokens_per_request"] = stats["total_tokens"] / stats["request_count"]
-            
-            # Round values
-            stats["total_cost"] = round(stats["total_cost"], 6)
-            stats["avg_cost_per_request"] = round(stats["avg_cost_per_request"], 6)
-            stats["avg_tokens_per_request"] = round(stats["avg_tokens_per_request"], 2)
-        
-        return user_stats

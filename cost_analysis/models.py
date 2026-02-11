@@ -1,5 +1,5 @@
 """
-Data models for cost analysis
+Data models for cost analysis and tracking.
 """
 
 from datetime import datetime
@@ -9,224 +9,272 @@ from pydantic import BaseModel, Field, validator
 
 
 class ModelType(str, Enum):
-    """LLM model types"""
-    GEMINI_2_FLASH = "gemini-2.0-flash-exp"
-    GEMINI_15_PRO = "gemini-1.5-pro"
-    GEMINI_15_FLASH = "gemini-1.5-flash"
-    TEXT_EMBEDDING = "text-embedding-004"
+    """LLM model types with their pricing."""
     
+    GEMINI_FLASH = "gemini-2.0-flash-exp"
+    GEMINI_PRO = "gemini-1.5-pro"
+    GEMINI_ULTRA = "gemini-ultra"
+    EMBEDDING = "text-embedding-004"
+
+
+class OperationType(str, Enum):
+    """Types of LLM operations."""
     
-class RequestType(str, Enum):
-    """Type of API request"""
     GENERATION = "generation"
-    EMBEDDING = "embedding"
     CLASSIFICATION = "classification"
+    EMBEDDING = "embedding"
+    SUMMARIZATION = "summarization"
+    EXTRACTION = "extraction"
 
 
-class TokenUsage(BaseModel):
-    """Token usage information for a single request"""
-    request_id: str = Field(..., description="Unique request identifier")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    model: ModelType
-    request_type: RequestType
+class CostCategory(str, Enum):
+    """Cost categories for analysis."""
     
-    # Token counts
-    input_tokens: int = Field(ge=0, description="Number of input tokens")
-    output_tokens: int = Field(ge=0, description="Number of output tokens")
-    total_tokens: int = Field(ge=0, description="Total tokens used")
-    
-    # Context
-    user_id: Optional[str] = None
-    session_id: Optional[str] = None
-    conversation_id: Optional[str] = None
-    agent_name: Optional[str] = None
-    
-    # Metadata
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    
-    @validator("total_tokens", always=True)
-    def calculate_total(cls, v, values):
-        """Calculate total tokens from input and output"""
-        if v == 0 and "input_tokens" in values and "output_tokens" in values:
-            return values["input_tokens"] + values["output_tokens"]
-        return v
-    
-    class Config:
-        use_enum_values = True
-
-
-class CostRecord(BaseModel):
-    """Cost record for a single request"""
-    usage: TokenUsage
-    
-    # Costs (in USD)
-    input_cost: float = Field(ge=0, description="Cost of input tokens")
-    output_cost: float = Field(ge=0, description="Cost of output tokens")
-    total_cost: float = Field(ge=0, description="Total cost")
-    
-    # Pricing used
-    input_price_per_1k: float = Field(ge=0, description="Input price per 1K tokens")
-    output_price_per_1k: float = Field(ge=0, description="Output price per 1K tokens")
-    
-    @validator("total_cost", always=True)
-    def calculate_total_cost(cls, v, values):
-        """Calculate total cost from input and output"""
-        if v == 0 and "input_cost" in values and "output_cost" in values:
-            return values["input_cost"] + values["output_cost"]
-        return v
-
-
-class UsageSummary(BaseModel):
-    """Summary of usage over a time period"""
-    start_time: datetime
-    end_time: datetime
-    
-    # Request counts
-    total_requests: int = 0
-    requests_by_type: Dict[RequestType, int] = Field(default_factory=dict)
-    requests_by_model: Dict[ModelType, int] = Field(default_factory=dict)
-    
-    # Token counts
-    total_tokens: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    tokens_by_model: Dict[ModelType, int] = Field(default_factory=dict)
-    
-    # Costs
-    total_cost: float = 0.0
-    cost_by_model: Dict[ModelType, float] = Field(default_factory=dict)
-    cost_by_user: Dict[str, float] = Field(default_factory=dict)
-    
-    # Averages
-    avg_tokens_per_request: float = 0.0
-    avg_cost_per_request: float = 0.0
-    
-    class Config:
-        use_enum_values = True
+    LLM_GENERATION = "llm_generation"
+    LLM_EMBEDDING = "llm_embedding"
+    VECTOR_SEARCH = "vector_search"
+    CACHING = "caching"
+    STORAGE = "storage"
+    COMPUTE = "compute"
 
 
 class BudgetPeriod(str, Enum):
-    """Budget period types"""
+    """Budget tracking periods."""
+    
+    HOURLY = "hourly"
     DAILY = "daily"
     WEEKLY = "weekly"
     MONTHLY = "monthly"
     YEARLY = "yearly"
 
 
-class Budget(BaseModel):
-    """Budget configuration"""
-    id: str
-    name: str
-    period: BudgetPeriod
-    limit: float = Field(gt=0, description="Budget limit in USD")
+class TokenUsage(BaseModel):
+    """Token usage information for a single operation."""
     
-    # Optional filters
+    operation_id: str = Field(..., description="Unique operation identifier")
+    model_type: ModelType = Field(..., description="Model used")
+    operation_type: OperationType = Field(..., description="Type of operation")
+    
+    prompt_tokens: int = Field(0, ge=0, description="Input tokens")
+    completion_tokens: int = Field(0, ge=0, description="Output tokens")
+    total_tokens: int = Field(0, ge=0, description="Total tokens")
+    
+    cached_tokens: int = Field(0, ge=0, description="Tokens from cache")
+    
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    duration_ms: float = Field(0.0, ge=0, description="Operation duration in ms")
+    
     user_id: Optional[str] = None
-    model: Optional[ModelType] = None
+    session_id: Optional[str] = None
+    api_key_id: Optional[str] = None
     
-    # Alert thresholds (percentage of budget)
-    warning_threshold: float = Field(default=0.8, ge=0, le=1)
-    critical_threshold: float = Field(default=0.95, ge=0, le=1)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     
-    # Current usage
-    current_usage: float = Field(default=0.0, ge=0)
-    
-    # Metadata
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-    
-    @property
-    def usage_percentage(self) -> float:
-        """Calculate current usage as percentage of limit"""
-        return (self.current_usage / self.limit) * 100 if self.limit > 0 else 0
-    
-    @property
-    def remaining(self) -> float:
-        """Calculate remaining budget"""
-        return max(0, self.limit - self.current_usage)
-    
-    @property
-    def is_exceeded(self) -> bool:
-        """Check if budget is exceeded"""
-        return self.current_usage >= self.limit
-    
-    @property
-    def is_critical(self) -> bool:
-        """Check if usage is at critical level"""
-        return self.current_usage >= (self.limit * self.critical_threshold)
-    
-    @property
-    def is_warning(self) -> bool:
-        """Check if usage is at warning level"""
-        return self.current_usage >= (self.limit * self.warning_threshold)
+    @validator("total_tokens", always=True)
+    def calculate_total_tokens(cls, v, values):
+        """Calculate total tokens if not provided."""
+        if v == 0:
+            return values.get("prompt_tokens", 0) + values.get("completion_tokens", 0)
+        return v
     
     class Config:
-        use_enum_values = True
+        json_schema_extra = {
+            "example": {
+                "operation_id": "op_123",
+                "model_type": "gemini-2.0-flash-exp",
+                "operation_type": "generation",
+                "prompt_tokens": 150,
+                "completion_tokens": 350,
+                "total_tokens": 500,
+                "cached_tokens": 0,
+                "duration_ms": 1250.5,
+                "user_id": "user_456",
+                "session_id": "session_789"
+            }
+        }
 
 
-class AlertLevel(str, Enum):
-    """Alert severity levels"""
-    INFO = "info"
-    WARNING = "warning"
-    CRITICAL = "critical"
+class CostRecord(BaseModel):
+    """Cost record for a single operation."""
+    
+    record_id: str = Field(..., description="Unique record identifier")
+    token_usage: TokenUsage = Field(..., description="Associated token usage")
+    
+    category: CostCategory = Field(..., description="Cost category")
+    
+    prompt_cost: float = Field(0.0, ge=0, description="Cost for input tokens")
+    completion_cost: float = Field(0.0, ge=0, description="Cost for output tokens")
+    total_cost: float = Field(0.0, ge=0, description="Total cost")
+    
+    cached_cost_savings: float = Field(0.0, ge=0, description="Savings from caching")
+    
+    currency: str = Field("USD", description="Currency code")
+    
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    
+    tags: Dict[str, str] = Field(default_factory=dict, description="Custom tags")
+    
+    @validator("total_cost", always=True)
+    def calculate_total_cost(cls, v, values):
+        """Calculate total cost if not provided."""
+        if v == 0.0:
+            return values.get("prompt_cost", 0.0) + values.get("completion_cost", 0.0)
+        return v
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "record_id": "rec_123",
+                "category": "llm_generation",
+                "prompt_cost": 0.00015,
+                "completion_cost": 0.00035,
+                "total_cost": 0.0005,
+                "cached_cost_savings": 0.0,
+                "currency": "USD",
+                "tags": {"feature": "chat", "priority": "high"}
+            }
+        }
 
 
 class BudgetAlert(BaseModel):
-    """Budget alert"""
-    id: str
-    budget_id: str
-    level: AlertLevel
-    message: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    """Budget alert when thresholds are exceeded."""
     
-    # Alert details
-    current_usage: float
-    budget_limit: float
-    usage_percentage: float
+    alert_id: str = Field(..., description="Unique alert identifier")
     
-    # Alert status
-    acknowledged: bool = False
+    budget_name: str = Field(..., description="Budget name")
+    period: BudgetPeriod = Field(..., description="Budget period")
+    
+    budget_limit: float = Field(..., ge=0, description="Budget limit")
+    current_spend: float = Field(..., ge=0, description="Current spend")
+    threshold_percent: float = Field(..., ge=0, le=100, description="Alert threshold %")
+    
+    exceeded_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    severity: str = Field("warning", description="Alert severity: info/warning/critical")
+    
+    affected_users: list[str] = Field(default_factory=list)
+    affected_features: list[str] = Field(default_factory=list)
+    
+    message: str = Field(..., description="Alert message")
+    
+    acknowledged: bool = Field(False, description="Whether alert was acknowledged")
     acknowledged_at: Optional[datetime] = None
     acknowledged_by: Optional[str] = None
     
+    @property
+    def percent_used(self) -> float:
+        """Calculate percentage of budget used."""
+        if self.budget_limit == 0:
+            return 0.0
+        return (self.current_spend / self.budget_limit) * 100
+    
+    @property
+    def remaining_budget(self) -> float:
+        """Calculate remaining budget."""
+        return max(0.0, self.budget_limit - self.current_spend)
+    
     class Config:
-        use_enum_values = True
+        json_schema_extra = {
+            "example": {
+                "alert_id": "alert_123",
+                "budget_name": "monthly_llm_budget",
+                "period": "monthly",
+                "budget_limit": 100.0,
+                "current_spend": 85.50,
+                "threshold_percent": 80.0,
+                "severity": "warning",
+                "message": "Budget 85.5% consumed (threshold: 80%)",
+                "acknowledged": False
+            }
+        }
 
 
-class OptimizationType(str, Enum):
-    """Types of optimization recommendations"""
-    MODEL_SELECTION = "model_selection"
-    PROMPT_OPTIMIZATION = "prompt_optimization"
-    CACHING = "caching"
-    BATCH_PROCESSING = "batch_processing"
-    RATE_LIMITING = "rate_limiting"
-    CONTEXT_MANAGEMENT = "context_management"
-
-
-class OptimizationRecommendation(BaseModel):
-    """Cost optimization recommendation"""
-    id: str
-    type: OptimizationType
-    title: str
-    description: str
+class OptimizationSuggestion(BaseModel):
+    """Suggestion for cost optimization."""
     
-    # Impact estimation
-    estimated_savings: float = Field(ge=0, description="Estimated monthly savings in USD")
-    estimated_savings_percentage: float = Field(ge=0, le=100, description="Estimated savings percentage")
+    suggestion_id: str = Field(..., description="Unique suggestion identifier")
     
-    # Implementation
-    priority: int = Field(ge=1, le=5, description="Priority (1=highest, 5=lowest)")
-    effort: str = Field(description="Implementation effort (low/medium/high)")
+    category: str = Field(..., description="Optimization category")
+    title: str = Field(..., description="Short title")
+    description: str = Field(..., description="Detailed description")
     
-    # Details
-    current_state: str
-    recommended_state: str
-    implementation_steps: list[str] = Field(default_factory=list)
+    potential_savings: float = Field(0.0, ge=0, description="Estimated savings (USD/month)")
+    potential_savings_percent: float = Field(0.0, ge=0, description="Estimated savings %")
     
-    # Metadata
+    implementation_effort: str = Field(..., description="Effort: low/medium/high")
+    priority: str = Field(..., description="Priority: low/medium/high/critical")
+    
+    current_cost: float = Field(0.0, ge=0, description="Current monthly cost")
+    optimized_cost: float = Field(0.0, ge=0, description="Projected optimized cost")
+    
+    affected_operations: list[str] = Field(default_factory=list)
+    
+    action_items: list[str] = Field(default_factory=list, description="Steps to implement")
+    
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    implemented: bool = False
+    
+    implemented: bool = Field(False, description="Whether suggestion was implemented")
     implemented_at: Optional[datetime] = None
     
+    actual_savings: Optional[float] = Field(None, description="Actual savings after implementation")
+    
     class Config:
-        use_enum_values = True
+        json_schema_extra = {
+            "example": {
+                "suggestion_id": "sug_123",
+                "category": "caching",
+                "title": "Implement prompt caching for repeated queries",
+                "description": "30% of queries are repeated within 1 hour. Implement caching to reduce LLM calls.",
+                "potential_savings": 45.0,
+                "potential_savings_percent": 15.0,
+                "implementation_effort": "medium",
+                "priority": "high",
+                "current_cost": 300.0,
+                "optimized_cost": 255.0,
+                "action_items": [
+                    "Implement Redis-based prompt cache",
+                    "Set TTL to 1 hour for repeated queries",
+                    "Monitor cache hit rate"
+                ],
+                "implemented": False
+            }
+        }
+
+
+class CostBreakdown(BaseModel):
+    """Detailed cost breakdown."""
+    
+    period_start: datetime
+    period_end: datetime
+    
+    total_cost: float = Field(0.0, ge=0)
+    
+    by_category: Dict[str, float] = Field(default_factory=dict)
+    by_model: Dict[str, float] = Field(default_factory=dict)
+    by_operation: Dict[str, float] = Field(default_factory=dict)
+    by_user: Dict[str, float] = Field(default_factory=dict)
+    by_feature: Dict[str, float] = Field(default_factory=dict)
+    
+    total_tokens: int = Field(0, ge=0)
+    total_requests: int = Field(0, ge=0)
+    
+    avg_cost_per_request: float = Field(0.0, ge=0)
+    avg_tokens_per_request: float = Field(0.0, ge=0)
+    
+    cache_hit_rate: float = Field(0.0, ge=0, le=1)
+    cost_savings_from_cache: float = Field(0.0, ge=0)
+
+
+class CostTrend(BaseModel):
+    """Cost trend analysis."""
+    
+    period: BudgetPeriod
+    data_points: list[tuple[datetime, float]] = Field(default_factory=list)
+    
+    trend_direction: str = Field(..., description="increasing/decreasing/stable")
+    trend_percent: float = Field(0.0, description="Trend change percentage")
+    
+    forecast_next_period: float = Field(0.0, ge=0)
+    confidence_interval: tuple[float, float] = Field((0.0, 0.0))
+    
+    anomalies: list[datetime] = Field(default_factory=list, description="Detected anomalies")

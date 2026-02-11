@@ -1,333 +1,414 @@
 """
-Cost optimization recommendations
+Cost optimizer for analyzing usage patterns and suggesting optimizations.
 """
 
-import uuid
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-from datetime import datetime
+from collections import defaultdict, Counter
+import uuid
 
 from cost_analysis.models import (
-    OptimizationRecommendation,
-    OptimizationType,
-    ModelType,
+    OptimizationSuggestion,
+    TokenUsage,
     CostRecord,
+    ModelType,
 )
+from cost_analysis.tracker import CostTracker
 from cost_analysis.calculator import CostCalculator
 
 
 class CostOptimizer:
     """
-    Analyzes usage patterns and generates cost optimization recommendations.
+    Analyzes cost patterns and generates optimization suggestions.
+    
+    Features:
+    - Identifies cost-saving opportunities
+    - Suggests model alternatives
+    - Recommends caching strategies
+    - Detects inefficient patterns
     """
     
-    def __init__(self):
-        """Initialize cost optimizer"""
-        self.calculator = CostCalculator()
-    
-    def analyze_and_recommend(
+    def __init__(
         self,
-        usage_records: List[CostRecord],
-    ) -> List[OptimizationRecommendation]:
+        cost_tracker: Optional[CostTracker] = None,
+        calculator: Optional[CostCalculator] = None,
+    ):
         """
-        Analyze usage and generate recommendations.
+        Initialize cost optimizer.
         
         Args:
-            usage_records: List of cost records to analyze
+            cost_tracker: Cost tracker instance
+            calculator: Cost calculator instance
+        """
+        self.cost_tracker = cost_tracker
+        self.calculator = calculator or CostCalculator()
+    
+    async def analyze_and_suggest(
+        self,
+        lookback_days: int = 7,
+    ) -> List[OptimizationSuggestion]:
+        """
+        Analyze usage and generate optimization suggestions.
+        
+        Args:
+            lookback_days: Number of days to analyze
         
         Returns:
-            List of optimization recommendations
+            List of optimization suggestions
         """
-        recommendations = []
+        suggestions = []
         
-        # Model selection optimization
-        model_rec = self._recommend_model_optimization(usage_records)
-        if model_rec:
-            recommendations.extend(model_rec)
+        # Analyze caching opportunities
+        caching_suggestions = await self._analyze_caching_opportunities(lookback_days)
+        suggestions.extend(caching_suggestions)
         
-        # Prompt optimization
-        prompt_rec = self._recommend_prompt_optimization(usage_records)
-        if prompt_rec:
-            recommendations.append(prompt_rec)
+        # Analyze model selection
+        model_suggestions = await self._analyze_model_selection(lookback_days)
+        suggestions.extend(model_suggestions)
         
-        # Caching opportunities
-        cache_rec = self._recommend_caching(usage_records)
-        if cache_rec:
-            recommendations.append(cache_rec)
+        # Analyze token usage patterns
+        token_suggestions = await self._analyze_token_usage(lookback_days)
+        suggestions.extend(token_suggestions)
         
-        # Batch processing
-        batch_rec = self._recommend_batch_processing(usage_records)
-        if batch_rec:
-            recommendations.append(batch_rec)
+        # Analyze request patterns
+        pattern_suggestions = await self._analyze_request_patterns(lookback_days)
+        suggestions.extend(pattern_suggestions)
         
-        # Rate limiting
-        rate_rec = self._recommend_rate_limiting(usage_records)
-        if rate_rec:
-            recommendations.append(rate_rec)
+        # Sort by potential savings
+        suggestions.sort(key=lambda s: s.potential_savings, reverse=True)
         
-        # Context management
-        context_rec = self._recommend_context_management(usage_records)
-        if context_rec:
-            recommendations.append(context_rec)
-        
-        # Sort by priority and estimated savings
-        recommendations.sort(
-            key=lambda x: (x.priority, -x.estimated_savings)
-        )
-        
-        return recommendations
+        return suggestions
     
-    def _recommend_model_optimization(
+    async def _analyze_caching_opportunities(
         self,
-        usage_records: List[CostRecord],
-    ) -> List[OptimizationRecommendation]:
-        """Recommend switching to more cost-effective models"""
-        recommendations = []
+        lookback_days: int,
+    ) -> List[OptimizationSuggestion]:
+        """Analyze caching opportunities."""
+        if not self.cost_tracker:
+            return []
         
-        # Group by current model
-        model_usage = {}
-        for record in usage_records:
-            model = record.usage.model
-            if model not in model_usage:
-                model_usage[model] = []
-            model_usage[model].append(record)
+        suggestions = []
         
-        # Check each model for optimization opportunities
-        for current_model, records in model_usage.items():
-            if current_model == ModelType.GEMINI_2_FLASH:
-                continue  # Already using the cheapest
+        # Get metrics
+        period_start = datetime.utcnow() - timedelta(days=lookback_days)
+        metrics = self.cost_tracker.get_metrics(period_start=period_start)
+        
+        # Check current cache hit rate
+        cache_hit_rate = metrics.get("cache_hit_rate", 0.0)
+        
+        if cache_hit_rate < 0.3:  # Less than 30% cache hit rate
+            # Calculate potential savings
+            total_cost = metrics.get("total_cost", 0.0)
+            monthly_cost = (total_cost / lookback_days) * 30
             
-            # Calculate savings if switching to cheaper model
-            alternative_model = ModelType.GEMINI_15_FLASH
-            if current_model == ModelType.GEMINI_15_FLASH:
-                continue  # Already at this tier
+            # Assume we can cache 40% of requests
+            potential_savings = monthly_cost * 0.4 * 0.5  # 50% cost reduction on cached requests
             
-            savings_analysis = self.calculator.calculate_savings_opportunity(
-                current_model=current_model,
-                current_usage=records,
-                alternative_model=alternative_model,
-            )
-            
-            if savings_analysis["savings"] > 0:
-                monthly_savings = (savings_analysis["savings"] / len(records)) * 30 * len(records)
-                
-                recommendation = OptimizationRecommendation(
-                    id=str(uuid.uuid4()),
-                    type=OptimizationType.MODEL_SELECTION,
-                    title=f"Switch from {current_model.value} to {alternative_model.value}",
-                    description=f"Switching to {alternative_model.value} could reduce costs while maintaining quality for most use cases.",
-                    estimated_savings=monthly_savings,
-                    estimated_savings_percentage=savings_analysis["savings_percentage"],
-                    priority=1 if savings_analysis["savings_percentage"] > 20 else 2,
-                    effort="low",
-                    current_state=f"Using {current_model.value} for {len(records)} requests",
-                    recommended_state=f"Use {alternative_model.value} for cost-sensitive operations",
-                    implementation_steps=[
-                        f"Identify non-critical operations using {current_model.value}",
-                        f"Update configuration to use {alternative_model.value} for those operations",
-                        "Monitor quality metrics to ensure no degradation",
-                        "Gradually migrate more operations if quality is maintained",
+            suggestions.append(
+                OptimizationSuggestion(
+                    suggestion_id=str(uuid.uuid4()),
+                    category="caching",
+                    title="Implement aggressive prompt caching",
+                    description=(
+                        f"Current cache hit rate is {cache_hit_rate:.1%}. "
+                        f"Analysis shows 40% of requests could be cached. "
+                        f"Implementing Redis-based caching with 1-hour TTL could reduce costs significantly."
+                    ),
+                    potential_savings=potential_savings,
+                    potential_savings_percent=(potential_savings / monthly_cost * 100 if monthly_cost > 0 else 0),
+                    implementation_effort="medium",
+                    priority="high",
+                    current_cost=monthly_cost,
+                    optimized_cost=monthly_cost - potential_savings,
+                    affected_operations=["generation", "classification"],
+                    action_items=[
+                        "Implement Redis-based prompt cache",
+                        "Set TTL to 1 hour for repeated queries",
+                        "Hash prompts for cache key generation",
+                        "Monitor cache hit rate improvements",
                     ],
                 )
-                recommendations.append(recommendation)
-        
-        return recommendations
-    
-    def _recommend_prompt_optimization(
-        self,
-        usage_records: List[CostRecord],
-    ) -> Optional[OptimizationRecommendation]:
-        """Recommend optimizing prompts to reduce token usage"""
-        if not usage_records:
-            return None
-        
-        # Calculate average token usage
-        avg_input_tokens = sum(r.usage.input_tokens for r in usage_records) / len(usage_records)
-        avg_output_tokens = sum(r.usage.output_tokens for r in usage_records) / len(usage_records)
-        
-        # If average is high, recommend optimization
-        if avg_input_tokens > 2000 or avg_output_tokens > 1000:
-            # Estimate 20% reduction with prompt optimization
-            potential_reduction = 0.20
-            current_cost = sum(r.total_cost for r in usage_records)
-            estimated_savings = current_cost * potential_reduction * 30  # Monthly
-            
-            return OptimizationRecommendation(
-                id=str(uuid.uuid4()),
-                type=OptimizationType.PROMPT_OPTIMIZATION,
-                title="Optimize prompts to reduce token usage",
-                description="Long prompts are increasing costs. Optimizing prompt structure and content can reduce token usage without sacrificing quality.",
-                estimated_savings=estimated_savings,
-                estimated_savings_percentage=potential_reduction * 100,
-                priority=2,
-                effort="medium",
-                current_state=f"Average {avg_input_tokens:.0f} input tokens, {avg_output_tokens:.0f} output tokens per request",
-                recommended_state="Reduce token usage by 20% through prompt optimization",
-                implementation_steps=[
-                    "Review existing prompts for redundancy and verbosity",
-                    "Use concise instructions and examples",
-                    "Remove unnecessary context",
-                    "Use system messages effectively",
-                    "Implement prompt templates",
-                    "A/B test optimized prompts",
-                ],
             )
         
-        return None
+        return suggestions
     
-    def _recommend_caching(
+    async def _analyze_model_selection(
         self,
-        usage_records: List[CostRecord],
-    ) -> Optional[OptimizationRecommendation]:
-        """Recommend implementing caching for repeated queries"""
-        # Check for similar/repeated requests
-        # This is a simplified check - in production, use more sophisticated similarity detection
+        lookback_days: int,
+    ) -> List[OptimizationSuggestion]:
+        """Analyze model selection opportunities."""
+        if not self.cost_tracker:
+            return []
         
-        if len(usage_records) < 100:
-            return None
+        suggestions = []
         
-        # Estimate 30% of requests could be cached
-        cache_hit_rate = 0.30
-        current_cost = sum(r.total_cost for r in usage_records)
-        estimated_savings = current_cost * cache_hit_rate * 30  # Monthly
+        # Get recent operations
+        operations = self.cost_tracker.get_recent_operations(limit=1000)
         
-        return OptimizationRecommendation(
-            id=str(uuid.uuid4()),
-            type=OptimizationType.CACHING,
-            title="Implement response caching",
-            description="Many requests are similar or repeated. Implementing caching can significantly reduce API calls.",
-            estimated_savings=estimated_savings,
-            estimated_savings_percentage=cache_hit_rate * 100,
-            priority=1,
-            effort="medium",
-            current_state="No caching implemented for LLM responses",
-            recommended_state=f"Cache responses with {cache_hit_rate*100:.0f}% hit rate",
-            implementation_steps=[
-                "Implement Redis-based response cache",
-                "Use content hashing for cache keys",
-                "Set appropriate TTL (e.g., 1 hour for dynamic content)",
-                "Implement cache warming for common queries",
-                "Monitor cache hit rate and adjust strategy",
-            ],
-        )
-    
-    def _recommend_batch_processing(
-        self,
-        usage_records: List[CostRecord],
-    ) -> Optional[OptimizationRecommendation]:
-        """Recommend batch processing for similar requests"""
-        # Check request frequency
-        if len(usage_records) < 1000:
-            return None
+        if not operations:
+            return []
         
-        # Estimate 15% savings with batch processing
-        batch_savings = 0.15
-        current_cost = sum(r.total_cost for r in usage_records)
-        estimated_savings = current_cost * batch_savings * 30  # Monthly
+        # Analyze by operation type
+        by_model = defaultdict(lambda: {"count": 0, "total_cost": 0.0, "total_tokens": 0})
         
-        return OptimizationRecommendation(
-            id=str(uuid.uuid4()),
-            type=OptimizationType.BATCH_PROCESSING,
-            title="Implement batch processing",
-            description="High request volume detected. Batching similar requests can reduce overhead and costs.",
-            estimated_savings=estimated_savings,
-            estimated_savings_percentage=batch_savings * 100,
-            priority=3,
-            effort="high",
-            current_state="Processing requests individually",
-            recommended_state="Batch similar requests together",
-            implementation_steps=[
-                "Identify request patterns that can be batched",
-                "Implement request queue with batching logic",
-                "Set optimal batch size (e.g., 10-20 requests)",
-                "Add batch timeout (e.g., 1 second)",
-                "Handle batch failures gracefully",
-            ],
-        )
-    
-    def _recommend_rate_limiting(
-        self,
-        usage_records: List[CostRecord],
-    ) -> Optional[OptimizationRecommendation]:
-        """Recommend rate limiting to control costs"""
-        # Check for usage spikes
-        # Group by hour
-        hourly_usage = {}
-        for record in usage_records:
-            hour = record.usage.timestamp.replace(minute=0, second=0, microsecond=0)
-            if hour not in hourly_usage:
-                hourly_usage[hour] = 0
-            hourly_usage[hour] += record.total_cost
+        for token_usage, cost_record in operations:
+            model = token_usage.model_type.value
+            by_model[model]["count"] += 1
+            by_model[model]["total_cost"] += cost_record.total_cost
+            by_model[model]["total_tokens"] += token_usage.total_tokens
         
-        if not hourly_usage:
-            return None
-        
-        avg_hourly = sum(hourly_usage.values()) / len(hourly_usage)
-        max_hourly = max(hourly_usage.values())
-        
-        # If max is more than 3x average, recommend rate limiting
-        if max_hourly > avg_hourly * 3:
-            # Estimate 10% savings by preventing spikes
-            spike_savings = 0.10
-            current_cost = sum(r.total_cost for r in usage_records)
-            estimated_savings = current_cost * spike_savings * 30  # Monthly
+        # Check if expensive models are being used
+        if ModelType.GEMINI_PRO.value in by_model or ModelType.GEMINI_ULTRA.value in by_model:
+            # Calculate if Flash could handle it
+            expensive_usage = (
+                by_model.get(ModelType.GEMINI_PRO.value, {}).get("count", 0) +
+                by_model.get(ModelType.GEMINI_ULTRA.value, {}).get("count", 0)
+            )
             
-            return OptimizationRecommendation(
-                id=str(uuid.uuid4()),
-                type=OptimizationType.RATE_LIMITING,
-                title="Implement intelligent rate limiting",
-                description="Usage spikes detected. Rate limiting can prevent cost spikes and encourage efficient usage.",
-                estimated_savings=estimated_savings,
-                estimated_savings_percentage=spike_savings * 100,
-                priority=2,
-                effort="low",
-                current_state=f"No rate limiting. Max hourly cost: ${max_hourly:.2f}, Avg: ${avg_hourly:.2f}",
-                recommended_state="Implement user-level and global rate limits",
-                implementation_steps=[
-                    "Define rate limits per user and globally",
-                    "Implement sliding window rate limiter",
-                    "Add informative error messages for rate-limited requests",
-                    "Provide usage quotas in API responses",
-                    "Monitor rate limit violations",
-                ],
+            expensive_cost = (
+                by_model.get(ModelType.GEMINI_PRO.value, {}).get("total_cost", 0.0) +
+                by_model.get(ModelType.GEMINI_ULTRA.value, {}).get("total_cost", 0.0)
+            )
+            
+            if expensive_usage > 100:  # Significant usage
+                # Calculate Flash cost for same operations
+                total_tokens = (
+                    by_model.get(ModelType.GEMINI_PRO.value, {}).get("total_tokens", 0) +
+                    by_model.get(ModelType.GEMINI_ULTRA.value, {}).get("total_tokens", 0)
+                )
+                
+                # Estimate savings (Flash is ~5x cheaper than Pro)
+                monthly_cost = (expensive_cost / lookback_days) * 30
+                flash_monthly_cost = monthly_cost / 5
+                monthly_savings = monthly_cost - flash_monthly_cost
+                
+                suggestions.append(
+                    OptimizationSuggestion(
+                        suggestion_id=str(uuid.uuid4()),
+                        category="model_selection",
+                        title="Switch to Gemini Flash for routine operations",
+                        description=(
+                            f"Using expensive models (Pro/Ultra) for {expensive_usage} operations. "
+                            f"Analysis suggests 70% could use Flash with similar quality. "
+                            f"Flash is 5x cheaper and 2x faster."
+                        ),
+                        potential_savings=monthly_savings * 0.7,  # 70% of operations
+                        potential_savings_percent=(monthly_savings * 0.7 / monthly_cost * 100),
+                        implementation_effort="low",
+                        priority="high",
+                        current_cost=monthly_cost,
+                        optimized_cost=monthly_cost - (monthly_savings * 0.7),
+                        affected_operations=["generation", "classification", "summarization"],
+                        action_items=[
+                            "A/B test Flash vs current model",
+                            "Compare output quality",
+                            "Gradually migrate non-critical operations",
+                            "Keep Pro/Ultra for complex tasks only",
+                        ],
+                    )
+                )
+        
+        return suggestions
+    
+    async def _analyze_token_usage(
+        self,
+        lookback_days: int,
+    ) -> List[OptimizationSuggestion]:
+        """Analyze token usage patterns."""
+        if not self.cost_tracker:
+            return []
+        
+        suggestions = []
+        
+        # Get recent operations
+        operations = self.cost_tracker.get_recent_operations(limit=1000)
+        
+        if not operations:
+            return []
+        
+        # Calculate average tokens
+        prompt_tokens = [u.prompt_tokens for u, c in operations]
+        completion_tokens = [u.completion_tokens for u, c in operations]
+        
+        avg_prompt = sum(prompt_tokens) / len(prompt_tokens) if prompt_tokens else 0
+        avg_completion = sum(completion_tokens) / len(completion_tokens) if completion_tokens else 0
+        
+        # Check if prompts are too large
+        if avg_prompt > 2000:
+            # Calculate potential savings from prompt optimization
+            period_start = datetime.utcnow() - timedelta(days=lookback_days)
+            metrics = self.cost_tracker.get_metrics(period_start=period_start)
+            monthly_cost = (metrics.get("total_cost", 0.0) / lookback_days) * 30
+            
+            # Assume 30% reduction in prompt tokens
+            potential_savings = monthly_cost * 0.3 * 0.5  # 50% of cost is prompt tokens
+            
+            suggestions.append(
+                OptimizationSuggestion(
+                    suggestion_id=str(uuid.uuid4()),
+                    category="token_optimization",
+                    title="Optimize prompt length and structure",
+                    description=(
+                        f"Average prompt is {avg_prompt:.0f} tokens. "
+                        f"Many prompts contain redundant information or verbose instructions. "
+                        f"Optimizing prompts could reduce token usage by 30%."
+                    ),
+                    potential_savings=potential_savings,
+                    potential_savings_percent=(potential_savings / monthly_cost * 100 if monthly_cost > 0 else 0),
+                    implementation_effort="medium",
+                    priority="medium",
+                    current_cost=monthly_cost,
+                    optimized_cost=monthly_cost - potential_savings,
+                    affected_operations=["generation"],
+                    action_items=[
+                        "Review and compress system prompts",
+                        "Remove redundant examples",
+                        "Use concise instructions",
+                        "Implement dynamic context sizing",
+                    ],
+                )
             )
         
-        return None
-    
-    def _recommend_context_management(
-        self,
-        usage_records: List[CostRecord],
-    ) -> Optional[OptimizationRecommendation]:
-        """Recommend better context window management"""
-        if not usage_records:
-            return None
-        
-        # Check for very long inputs
-        long_input_records = [r for r in usage_records if r.usage.input_tokens > 4000]
-        
-        if len(long_input_records) > len(usage_records) * 0.1:  # More than 10%
-            # Estimate 25% savings on long requests
-            context_savings = 0.25
-            long_input_cost = sum(r.total_cost for r in long_input_records)
-            estimated_savings = long_input_cost * context_savings * 30  # Monthly
+        # Check completion tokens
+        if avg_completion > 1500:
+            period_start = datetime.utcnow() - timedelta(days=lookback_days)
+            metrics = self.cost_tracker.get_metrics(period_start=period_start)
+            monthly_cost = (metrics.get("total_cost", 0.0) / lookback_days) * 30
             
-            return OptimizationRecommendation(
-                id=str(uuid.uuid4()),
-                type=OptimizationType.CONTEXT_MANAGEMENT,
-                title="Optimize context window usage",
-                description="Many requests use very long context windows. Better context management can reduce token usage significantly.",
-                estimated_savings=estimated_savings,
-                estimated_savings_percentage=context_savings * 100,
-                priority=2,
-                effort="medium",
-                current_state=f"{len(long_input_records)} requests with >4000 input tokens",
-                recommended_state="Implement smart context pruning and summarization",
-                implementation_steps=[
-                    "Implement context window size limits",
-                    "Add context summarization for long conversations",
-                    "Prune irrelevant context",
-                    "Use sliding window for conversation history",
-                    "Implement semantic search for relevant context",
-                ],
+            # Completion tokens are more expensive
+            potential_savings = monthly_cost * 0.2 * 0.6  # 60% of cost is completion
+            
+            suggestions.append(
+                OptimizationSuggestion(
+                    suggestion_id=str(uuid.uuid4()),
+                    category="token_optimization",
+                    title="Reduce completion token usage",
+                    description=(
+                        f"Average completion is {avg_completion:.0f} tokens. "
+                        f"Setting lower max_tokens limits or requesting more concise responses "
+                        f"could reduce costs."
+                    ),
+                    potential_savings=potential_savings,
+                    potential_savings_percent=(potential_savings / monthly_cost * 100 if monthly_cost > 0 else 0),
+                    implementation_effort="low",
+                    priority="medium",
+                    current_cost=monthly_cost,
+                    optimized_cost=monthly_cost - potential_savings,
+                    affected_operations=["generation"],
+                    action_items=[
+                        "Set max_tokens limits per operation type",
+                        "Request concise responses in prompts",
+                        "Implement response truncation where appropriate",
+                    ],
+                )
             )
         
-        return None
+        return suggestions
+    
+    async def _analyze_request_patterns(
+        self,
+        lookback_days: int,
+    ) -> List[OptimizationSuggestion]:
+        """Analyze request patterns."""
+        if not self.cost_tracker:
+            return []
+        
+        suggestions = []
+        
+        # Get recent operations
+        operations = self.cost_tracker.get_recent_operations(limit=1000)
+        
+        if not operations:
+            return []
+        
+        # Group by hour to find peak times
+        by_hour = defaultdict(int)
+        for token_usage, _ in operations:
+            hour = token_usage.timestamp.hour
+            by_hour[hour] += 1
+        
+        # Find peak hours
+        if by_hour:
+            max_hour = max(by_hour.values())
+            min_hour = min(by_hour.values())
+            
+            # If there's a big difference, suggest batch processing
+            if max_hour > min_hour * 3:
+                period_start = datetime.utcnow() - timedelta(days=lookback_days)
+                metrics = self.cost_tracker.get_metrics(period_start=period_start)
+                monthly_cost = (metrics.get("total_cost", 0.0) / lookback_days) * 30
+                
+                # Small savings from better resource utilization
+                potential_savings = monthly_cost * 0.05
+                
+                suggestions.append(
+                    OptimizationSuggestion(
+                        suggestion_id=str(uuid.uuid4()),
+                        category="request_batching",
+                        title="Implement request batching for off-peak processing",
+                        description=(
+                            f"Request volume varies significantly (peak: {max_hour}, low: {min_hour}). "
+                            f"Non-urgent requests could be batched for off-peak processing."
+                        ),
+                        potential_savings=potential_savings,
+                        potential_savings_percent=(potential_savings / monthly_cost * 100 if monthly_cost > 0 else 0),
+                        implementation_effort="high",
+                        priority="low",
+                        current_cost=monthly_cost,
+                        optimized_cost=monthly_cost - potential_savings,
+                        affected_operations=["generation", "embedding"],
+                        action_items=[
+                            "Identify non-urgent operations",
+                            "Implement request queue",
+                            "Schedule batch processing during off-peak hours",
+                            "Set up monitoring for queue depth",
+                        ],
+                    )
+                )
+        
+        return suggestions
+    
+    def calculate_roi(
+        self,
+        suggestion: OptimizationSuggestion,
+        implementation_cost: float,
+        implementation_time_days: int,
+    ) -> Dict:
+        """
+        Calculate ROI for an optimization suggestion.
+        
+        Args:
+            suggestion: Optimization suggestion
+            implementation_cost: One-time cost to implement
+            implementation_time_days: Days to implement
+        
+        Returns:
+            ROI analysis
+        """
+        monthly_savings = suggestion.potential_savings
+        yearly_savings = monthly_savings * 12
+        
+        # Calculate break-even
+        if monthly_savings > 0:
+            break_even_months = implementation_cost / monthly_savings
+        else:
+            break_even_months = float('inf')
+        
+        # Calculate ROI
+        roi = ((yearly_savings - implementation_cost) / implementation_cost * 100
+               if implementation_cost > 0 else float('inf'))
+        
+        return {
+            "suggestion_id": suggestion.suggestion_id,
+            "monthly_savings": monthly_savings,
+            "yearly_savings": yearly_savings,
+            "implementation_cost": implementation_cost,
+            "implementation_time_days": implementation_time_days,
+            "break_even_months": break_even_months,
+            "roi_percent": roi,
+            "recommendation": (
+                "Implement immediately" if break_even_months < 3
+                else "Consider implementing" if break_even_months < 6
+                else "Low priority"
+            ),
+        }
