@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  langflow:
+    build: .
+    container_name: loan-collateral-langflow
+    ports:
+      - "7860:7860"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash-exp}
+      - SQLITE_DB_PATH=/app/database/loan_collateral.db
+      - CHROMADB_PATH=/app/data/chromadb
+      - SERP_API_KEY=${SERP_API_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-false}
+      - MAX_CRITIQUE_ITERATIONS=${MAX_CRITIQUE_ITERATIONS:-2}
+      - CRITIQUE_ACCEPTANCE_THRESHOLD=${CRITIQUE_ACCEPTANCE_THRESHOLD:-0.85}
+    volumes:
+      - ./data:/app/data
+      - ./database:/app/database
+      - ./logs:/app/logs
+      - ./langflow_flows:/app/langflow_flows
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Add a monitoring service
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+  #   networks:
+  #     - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  app-data:
+  app-database:
+  app-logs:

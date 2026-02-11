@@ -1,0 +1,20 @@
+apiVersion: v2
+name: ai-agent
+description: A Helm chart for AI Agent System with RAG and Planner-Critique
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - ai
+  - agent
+  - rag
+  - gemini
+  - llm
+maintainers:
+  - name: AI Agent Team
+    email: team@example.com
+sources:
+  - https://github.com/yourusername/ai-agent
+home: https://github.com/yourusername/ai-agent
+icon: https://raw.githubusercontent.com/yourusername/ai-agent/main/docs/icon.png
+dependencies: []

@@ -1,0 +1,203 @@
+# Default values for ai-agent Helm chart
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Number of replicas
+replicaCount: 3
+
+# Image configuration
+image:
+  repository: your-registry.com/ai-agent
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Service Account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/metrics"
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+  annotations: {}
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+  hosts:
+    - host: api.yourdomain.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: ai-agent-tls
+      hosts:
+        - api.yourdomain.com
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+# Autoscaling configuration
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity rules
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - ai-agent
+          topologyKey: kubernetes.io/hostname
+
+# Persistent storage
+persistence:
+  enabled: true
+  data:
+    storageClass: "standard"
+    accessMode: ReadWriteOnce
+    size: 10Gi
+  logs:
+    storageClass: "standard"
+    accessMode: ReadWriteOnce
+    size: 5Gi
+
+# Application configuration
+config:
+  environment: production
+  logLevel: INFO
+  
+  # LLM settings
+  llm:
+    generationModel: "gemini-2.0-flash-exp"
+    embeddingModel: "text-embedding-004"
+    generationTemperature: 0.7
+    classificationTemperature: 0.3
+    maxTokens: 2048
+    safetySettings: "medium"
+  
+  # Agent settings
+  agent:
+    confidenceThreshold: 0.6
+    maxCritiqueIterations: 2
+    cacheTTL: 3600
+  
+  # Database settings
+  database:
+    sqlitePath: "/app/data/credit_history.db"
+    poolSize: 10
+    maxOverflow: 20
+  
+  # Monitoring
+  monitoring:
+    enableMetrics: true
+    enableTracing: true
+  
+  # CORS
+  cors:
+    allowedOrigins: "https://yourdomain.com,https://app.yourdomain.com"
+
+# Secrets (should be provided via external secret management)
+secrets:
+  googleApiKey: ""
+  secretKey: ""
+  redisPassword: ""
+
+# Redis configuration
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: 7-alpine
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  persistence:
+    enabled: true
+    storageClass: "standard"
+    size: 2Gi
+
+# Health check configuration
+healthCheck:
+  liveness:
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    successThreshold: 1
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  startup:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 12
+
+# Network Policy
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress

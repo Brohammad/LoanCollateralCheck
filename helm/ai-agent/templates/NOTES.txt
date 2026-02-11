@@ -1,0 +1,91 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Your release is named {{ .Release.Name }}.
+
+To learn more about the release, try:
+
+  $ helm status {{ .Release.Name }} -n {{ .Release.Namespace }}
+  $ helm get all {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+{{- if .Values.ingress.enabled }}
+
+The application is accessible at:
+{{- range .Values.ingress.hosts }}
+  {{- if $.Values.ingress.tls }}
+  https://{{ .host }}
+  {{- else }}
+  http://{{ .host }}
+  {{- end }}
+{{- end }}
+
+{{- else }}
+
+To access the application, run:
+
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "ai-agent.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
+  
+  echo "Visit http://127.0.0.1:8000 to use your application"
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8000:$CONTAINER_PORT
+
+{{- end }}
+
+API Documentation is available at:
+  /docs (Swagger UI)
+  /redoc (ReDoc)
+
+Health endpoints:
+  /health       - Overall health
+  /health/live  - Liveness check
+  /health/ready - Readiness check
+
+Metrics endpoint (if enabled):
+  /metrics      - Prometheus metrics
+
+{{- if .Values.autoscaling.enabled }}
+
+Autoscaling is enabled:
+  Min replicas: {{ .Values.autoscaling.minReplicas }}
+  Max replicas: {{ .Values.autoscaling.maxReplicas }}
+  Target CPU: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}%
+  {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+  Target Memory: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}%
+  {{- end }}
+
+{{- end }}
+
+{{- if .Values.redis.enabled }}
+
+Redis is deployed as part of this release.
+To connect to Redis from your application:
+  Host: {{ include "ai-agent.redisHost" . }}
+  Port: 6379
+
+{{- end }}
+
+{{- if not .Values.secrets.googleApiKey }}
+
+WARNING: No GOOGLE_API_KEY provided. The application will not work without it.
+Please set secrets.googleApiKey in your values.yaml or via --set flag:
+
+  helm upgrade {{ .Release.Name }} ./helm/ai-agent \
+    --set secrets.googleApiKey=your-google-api-key \
+    --namespace {{ .Release.Namespace }}
+
+{{- end }}
+
+{{- if not .Values.secrets.secretKey }}
+
+WARNING: No SECRET_KEY provided. Using default value (INSECURE).
+Please generate a secure SECRET_KEY and update the deployment:
+
+  openssl rand -hex 32
+
+  helm upgrade {{ .Release.Name }} ./helm/ai-agent \
+    --set secrets.secretKey=your-generated-secret-key \
+    --namespace {{ .Release.Namespace }}
+
+{{- end }}
+
+For more information, see the documentation:
+  https://github.com/yourusername/ai-agent/blob/main/docs/DEPLOYMENT_GUIDE.md

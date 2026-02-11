@@ -1,0 +1,45 @@
+# ConfigMap for AI Agent application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-agent-config
+  namespace: ai-agent
+  labels:
+    app: ai-agent
+    component: config
+data:
+  # Application settings
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  
+  # LLM settings
+  GENERATION_MODEL: "gemini-2.0-flash-exp"
+  EMBEDDING_MODEL: "text-embedding-004"
+  GENERATION_TEMPERATURE: "0.7"
+  CLASSIFICATION_TEMPERATURE: "0.3"
+  MAX_TOKENS: "2048"
+  SAFETY_SETTINGS: "medium"
+  
+  # Agent settings
+  CONFIDENCE_THRESHOLD: "0.6"
+  MAX_CRITIQUE_ITERATIONS: "2"
+  CACHE_TTL_SECONDS: "3600"
+  
+  # Database settings
+  SQLITE_PATH: "/app/data/credit_history.db"
+  DATABASE_POOL_SIZE: "10"
+  DATABASE_MAX_OVERFLOW: "20"
+  
+  # Redis settings
+  REDIS_URL: "redis://ai-agent-redis:6379/0"
+  
+  # Monitoring settings
+  ENABLE_METRICS: "true"
+  ENABLE_TRACING: "true"
+  JAEGER_AGENT_HOST: "jaeger-agent"
+  JAEGER_AGENT_PORT: "6831"
+  
+  # CORS settings
+  CORS_ALLOWED_ORIGINS: "https://yourdomain.com,https://app.yourdomain.com"

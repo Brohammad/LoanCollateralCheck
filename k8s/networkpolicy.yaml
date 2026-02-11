@@ -1,0 +1,114 @@
+# NetworkPolicy for AI Agent application
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ai-agent-netpol
+  namespace: ai-agent
+  labels:
+    app: ai-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-agent
+      component: application
+  policyTypes:
+    - Ingress
+    - Egress
+  
+  # Ingress rules
+  ingress:
+    # Allow from ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+    
+    # Allow from Prometheus (monitoring namespace)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8000
+  
+  # Egress rules
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    
+    # Allow Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+              component: cache
+      ports:
+        - protocol: TCP
+          port: 6379
+    
+    # Allow Jaeger agent (if deployed)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+              component: agent
+      ports:
+        - protocol: UDP
+          port: 6831
+    
+    # Allow external HTTPS (for LLM APIs)
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+    
+    # Allow external HTTP (if needed)
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 80
+---
+# NetworkPolicy for Redis
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-netpol
+  namespace: ai-agent
+  labels:
+    app: redis
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+      component: cache
+  policyTypes:
+    - Ingress
+  
+  ingress:
+    # Only allow from AI Agent application
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-agent
+              component: application
+      ports:
+        - protocol: TCP
+          port: 6379

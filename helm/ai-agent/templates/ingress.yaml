@@ -1,0 +1,62 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ai-agent.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-agent.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.ingress.className }}
+    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
+    {{- end }}
+    {{- if .Values.ingress.sslRedirect }}
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    {{- end }}
+    {{- if .Values.ingress.rateLimitRPS }}
+    nginx.ingress.kubernetes.io/limit-rps: "{{ .Values.ingress.rateLimitRPS }}"
+    {{- end }}
+    {{- if .Values.ingress.rateLimitConnections }}
+    nginx.ingress.kubernetes.io/limit-connections: "{{ .Values.ingress.rateLimitConnections }}"
+    {{- end }}
+    {{- if .Values.ingress.proxyBodySize }}
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.proxyBodySize }}
+    {{- end }}
+    {{- if .Values.ingress.proxyConnectTimeout }}
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "{{ .Values.ingress.proxyConnectTimeout }}"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "{{ .Values.ingress.proxySendTimeout }}"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "{{ .Values.ingress.proxyReadTimeout }}"
+    {{- end }}
+    {{- if .Values.ingress.certManager }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.certManagerIssuer }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "ai-agent.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

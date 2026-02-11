@@ -1,0 +1,78 @@
+# Kubernetes Ingress for AI Agent application
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-agent-ingress
+  namespace: ai-agent
+  labels:
+    app: ai-agent
+  annotations:
+    # NGINX Ingress Controller annotations
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    
+    # Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+    
+    # Timeouts
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    
+    # CORS (if not handled by application)
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://yourdomain.com"
+    
+    # SSL/TLS (cert-manager)
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    
+    # Body size limit
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.yourdomain.com
+        - app.yourdomain.com
+      secretName: ai-agent-tls
+  rules:
+    - host: api.yourdomain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-agent-service
+                port:
+                  number: 80
+    - host: app.yourdomain.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-agent-service
+                port:
+                  number: 80
+---
+# Alternative: Traefik Ingress
+# apiVersion: traefik.containo.us/v1alpha1
+# kind: IngressRoute
+# metadata:
+#   name: ai-agent-ingressroute
+#   namespace: ai-agent
+# spec:
+#   entryPoints:
+#     - websecure
+#   routes:
+#     - match: Host(`api.yourdomain.com`)
+#       kind: Rule
+#       services:
+#         - name: ai-agent-service
+#           port: 80
+#   tls:
+#     certResolver: letsencrypt

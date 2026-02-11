@@ -1,0 +1,55 @@
+# Prometheus configuration for AI Agent System
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'ai-agent'
+    environment: 'production'
+
+# Alertmanager configuration (optional)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - 'alertmanager:9093'
+
+# Load alert rules
+rule_files:
+  - '/etc/prometheus/alerts.yml'
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # AI Agent application
+  - job_name: 'ai-agent-app'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['app:8000']
+        labels:
+          service: 'ai-agent'
+          environment: 'production'
+    metric_relabel_configs:
+      # Drop high-cardinality metrics if needed
+      - source_labels: [__name__]
+        regex: 'go_.*'
+        action: drop
+
+  # Redis exporter (if using redis-exporter)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+        labels:
+          service: 'redis'
+          environment: 'production'
+
+  # Add more scrape targets as needed
+  # - job_name: 'node-exporter'
+  #   static_configs:
+  #     - targets: ['node-exporter:9100']

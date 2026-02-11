@@ -1,0 +1,240 @@
+"""
+Prometheus Alert Rules
+
+Defines alerting rules for system monitoring.
+This file should be loaded into Prometheus AlertManager.
+"""
+
+groups:
+  - name: system_health
+    interval: 30s
+    rules:
+      # High latency alert
+      - alert: HighP99Latency
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 15
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "P99 latency is high"
+          description: "P99 latency has been above 15 seconds for 5 minutes (current: {{ $value }}s)"
+          
+      - alert: CriticalP99Latency
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 30
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "P99 latency is critically high"
+          description: "P99 latency has been above 30 seconds for 2 minutes (current: {{ $value }}s)"
+
+  - name: error_rates
+    interval: 30s
+    rules:
+      # High error rate
+      - alert: HighErrorRate
+        expr: (sum(rate(http_requests_total{status_code=~"5.."}[10m])) / sum(rate(http_requests_total[10m]))) * 100 > 5
+        for: 10m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "Error rate is high"
+          description: "HTTP 5xx error rate is above 5% for 10 minutes (current: {{ $value }}%)"
+          
+      - alert: CriticalErrorRate
+        expr: (sum(rate(http_requests_total{status_code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) * 100 > 10
+        for: 5m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "Error rate is critically high"
+          description: "HTTP 5xx error rate is above 10% for 5 minutes (current: {{ $value }}%)"
+      
+      # API errors
+      - alert: HighAPIErrorRate
+        expr: (sum(rate(api_errors_total[10m])) / sum(rate(gemini_api_calls_total[10m]))) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: gemini_api
+        annotations:
+          summary: "High API error rate"
+          description: "Gemini API error rate is above 10% for 5 minutes (current: {{ $value }}%)"
+
+  - name: resource_usage
+    interval: 1m
+    rules:
+      # Database connection pool
+      - alert: DatabaseConnectionPoolHigh
+        expr: (database_connections_active / 5) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database connection pool utilization is high"
+          description: "Database connection pool is over 80% utilized (current: {{ $value }}%)"
+      
+      # Disk space
+      - alert: LowDiskSpace
+        expr: 100 - ((node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100) > 90
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Disk space is critically low"
+          description: "Disk usage is above 90% (current: {{ $value }}%)"
+      
+      # Memory usage
+      - alert: HighMemoryUsage
+        expr: (system_memory_usage_bytes / (system_memory_usage_bytes + node_memory_MemAvailable_bytes)) * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "Memory usage is high"
+          description: "Memory usage is above 90% for 10 minutes (current: {{ $value }}%)"
+
+  - name: cache_performance
+    interval: 1m
+    rules:
+      # Low cache hit rate
+      - alert: LowCacheHitRate
+        expr: cache_hit_rate < 50
+        for: 1h
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Cache hit rate is low"
+          description: "Cache hit rate for {{ $labels.cache_level }} has been below 50% for 1 hour (current: {{ $value }}%)"
+          recommendation: "Consider increasing cache TTL or reviewing cache strategy"
+
+  - name: ai_agent_performance
+    interval: 1m
+    rules:
+      # Critique acceptance rate
+      - alert: LowCritiqueAcceptanceRate
+        expr: critique_acceptance_rate < 70
+        for: 30m
+        labels:
+          severity: warning
+          component: critique
+        annotations:
+          summary: "Critique acceptance rate is low"
+          description: "Less than 70% of responses are accepted on first try (current: {{ $value }}%)"
+          recommendation: "Review critique threshold and planner prompts"
+      
+      # High iteration count
+      - alert: HighCritiqueIterations
+        expr: histogram_quantile(0.95, rate(planner_critique_iterations_bucket[10m])) > 2
+        for: 30m
+        labels:
+          severity: info
+          component: critique
+        annotations:
+          summary: "Average critique iterations is high"
+          description: "P95 critique iterations is above 2 (current: {{ $value }})"
+          recommendation: "Consider tuning acceptance threshold or improving prompts"
+
+  - name: circuit_breakers
+    interval: 30s
+    rules:
+      # Circuit breaker open
+      - alert: CircuitBreakerOpen
+        expr: circuit_breaker_state == 2
+        for: 2m
+        labels:
+          severity: critical
+          component: "{{ $labels.service }}"
+        annotations:
+          summary: "Circuit breaker is open"
+          description: "Circuit breaker for {{ $labels.service }} has been open for 2 minutes"
+          recommendation: "Check {{ $labels.service }} health and logs"
+
+  - name: service_availability
+    interval: 30s
+    rules:
+      # Service down
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Service is down"
+          description: "{{ $labels.instance }} has been down for 1 minute"
+          
+      # Health check failing
+      - alert: HealthCheckFailing
+        expr: probe_success == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: health
+        annotations:
+          summary: "Health check is failing"
+          description: "Health check for {{ $labels.instance }} has been failing for 2 minutes"
+
+  - name: token_usage
+    interval: 5m
+    rules:
+      # High token usage
+      - alert: HighTokenUsage
+        expr: rate(gemini_api_tokens_used_total[1h]) > 1000000
+        for: 1h
+        labels:
+          severity: warning
+          component: gemini_api
+        annotations:
+          summary: "Token usage is high"
+          description: "Token usage rate is above 1M tokens/hour (current: {{ $value }} tokens/hour)"
+          recommendation: "Review token budget and caching strategy"
+      
+      # Approaching token budget
+      - alert: ApproachingTokenBudget
+        expr: sum(increase(gemini_api_tokens_used_total[1d])) > 900000000
+        labels:
+          severity: warning
+          component: gemini_api
+        annotations:
+          summary: "Approaching daily token budget"
+          description: "Daily token usage is approaching budget (current: {{ $value }} tokens)"
+          recommendation: "Review usage patterns and implement cost controls"
+
+  - name: database_performance
+    interval: 1m
+    rules:
+      # Slow database queries
+      - alert: SlowDatabaseQueries
+        expr: histogram_quantile(0.95, rate(database_query_duration_seconds_bucket[10m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database queries are slow"
+          description: "P95 query duration is above 500ms (current: {{ $value }}s)"
+          recommendation: "Review query performance and indexes"
+
+  - name: rag_performance
+    interval: 1m
+    rules:
+      # Slow RAG retrieval
+      - alert: SlowRAGRetrieval
+        expr: histogram_quantile(0.95, rate(rag_retrieval_duration_seconds_bucket[10m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+          component: rag
+        annotations:
+          summary: "RAG retrieval is slow"
+          description: "P95 RAG retrieval time is above 5 seconds (current: {{ $value }}s)"
+          recommendation: "Check vector DB and web search performance"

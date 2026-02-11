@@ -1,0 +1,108 @@
+version: '3.8'
+
+services:
+  # Development application with hot reload
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: ai-agent-app-dev
+    ports:
+      - "8000:8000"
+    environment:
+      # Application settings
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+      - HOST=0.0.0.0
+      - PORT=8000
+      
+      # LLM settings
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GENERATION_MODEL=${GENERATION_MODEL:-gemini-2.0-flash-exp}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-004}
+      - GENERATION_TEMPERATURE=${GENERATION_TEMPERATURE:-0.7}
+      - CLASSIFICATION_TEMPERATURE=${CLASSIFICATION_TEMPERATURE:-0.3}
+      - MAX_TOKENS=${MAX_TOKENS:-2048}
+      
+      # Agent settings
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.6}
+      - MAX_CRITIQUE_ITERATIONS=${MAX_CRITIQUE_ITERATIONS:-2}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-300}
+      
+      # Database settings
+      - SQLITE_PATH=/app/data/credit_history.db
+      
+      # Redis settings (optional in dev)
+      - REDIS_URL=redis://redis:6379/0
+      
+      # Security settings (weak for dev)
+      - SECRET_KEY=dev-secret-key-not-for-production
+      - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000
+      
+      # Monitoring settings
+      - ENABLE_METRICS=true
+      - ENABLE_TRACING=false
+    volumes:
+      # Mount source code for hot reload
+      - ./app:/app/app:ro
+      - ./database:/app/database:ro
+      - ./config:/app/config:ro
+      - ./monitoring:/app/monitoring:ro
+      - ./security:/app/security:ro
+      - ./scripts:/app/scripts:ro
+      # Data volumes
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - ai-agent-network-dev
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    stdin_open: true
+    tty: true
+
+  # Redis for development
+  redis:
+    image: redis:7-alpine
+    container_name: ai-agent-redis-dev
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data_dev:/data
+    restart: unless-stopped
+    networks:
+      - ai-agent-network-dev
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Commander for Redis management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: ai-agent-redis-commander
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - ai-agent-network-dev
+
+volumes:
+  redis_data_dev:
+    driver: local
+
+networks:
+  ai-agent-network-dev:
+    driver: bridge

@@ -1,0 +1,8 @@
+# Kubernetes Namespace for AI Agent System
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-agent
+  labels:
+    name: ai-agent
+    environment: production

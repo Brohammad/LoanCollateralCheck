@@ -1,0 +1,253 @@
+{
+  "name": "AI Agent with RAG and Planner-Critique",
+  "description": "Complete AI agent system with intent classification, RAG retrieval, planner-critique loop, and history management",
+  "version": "1.0.0",
+  "nodes": [
+    {
+      "id": "intent_classifier_1",
+      "type": "IntentClassifier",
+      "position": {"x": 100, "y": 100},
+      "data": {
+        "component_name": "IntentClassifier",
+        "display_name": "Intent Classifier",
+        "inputs": {
+          "user_message": {"connection": "input_node"},
+          "gemini_api_key": {"value": "${GEMINI_API_KEY}"},
+          "model_name": {"value": "gemini-2.0-flash-exp"},
+          "intents": {"value": "greeting,question,command,clarification,other"},
+          "confidence_threshold": {"value": 0.5}
+        }
+      }
+    },
+    {
+      "id": "history_manager_1",
+      "type": "HistoryManager",
+      "position": {"x": 300, "y": 100},
+      "data": {
+        "component_name": "HistoryManager",
+        "display_name": "History Manager",
+        "inputs": {
+          "session_id": {"connection": "session_input"},
+          "db_path": {"value": "${SQLITE_DB_PATH}"},
+          "history_limit": {"value": 5},
+          "max_tokens": {"value": 2000},
+          "gemini_api_key": {"value": "${GEMINI_API_KEY}"},
+          "current_message": {"connection": "input_node"}
+        }
+      }
+    },
+    {
+      "id": "rag_retriever_1",
+      "type": "RAGRetriever",
+      "position": {"x": 500, "y": 100},
+      "data": {
+        "component_name": "RAGRetriever",
+        "display_name": "RAG Retriever",
+        "inputs": {
+          "query": {"connection": "input_node"},
+          "chromadb_path": {"value": "${CHROMADB_PATH}"},
+          "collection_name": {"value": "loan_documents"},
+          "top_k": {"value": 5},
+          "max_tokens": {"value": 4000},
+          "serp_api_key": {"value": "${SERP_API_KEY}"},
+          "db_path": {"value": "${SQLITE_DB_PATH}"}
+        }
+      }
+    },
+    {
+      "id": "conditional_router_1",
+      "type": "ConditionalRouter",
+      "position": {"x": 700, "y": 100},
+      "data": {
+        "component_name": "ConditionalRouter",
+        "display_name": "Route by Intent",
+        "inputs": {
+          "intent": {"connection": "intent_classifier_1.intent"}
+        },
+        "conditions": {
+          "greeting": "greeting_response",
+          "question": "planner_loop",
+          "command": "command_handler",
+          "other": "fallback_response"
+        }
+      }
+    },
+    {
+      "id": "planner_iteration_1",
+      "type": "LLMNode",
+      "position": {"x": 900, "y": 50},
+      "data": {
+        "component_name": "Planner",
+        "display_name": "Planner (Generate Response)",
+        "inputs": {
+          "model_name": {"value": "gemini-2.0-flash-exp"},
+          "api_key": {"value": "${GEMINI_API_KEY}"},
+          "prompt": {
+            "template": "Answer the following query using the provided context.\n\nQuery: {query}\n\nContext: {context}\n\nHistory: {history}\n\nProvide a clear, accurate response."
+          },
+          "query": {"connection": "input_node"},
+          "context": {"connection": "rag_retriever_1.context"},
+          "history": {"connection": "history_manager_1.history_context"},
+          "temperature": {"value": 0.7},
+          "max_tokens": {"value": 1000}
+        }
+      }
+    },
+    {
+      "id": "response_validator_1",
+      "type": "ResponseValidator",
+      "position": {"x": 1100, "y": 50},
+      "data": {
+        "component_name": "ResponseValidator",
+        "display_name": "Critique Agent",
+        "inputs": {
+          "generated_response": {"connection": "planner_iteration_1.output"},
+          "original_query": {"connection": "input_node"},
+          "context": {"connection": "rag_retriever_1.context"},
+          "gemini_api_key": {"value": "${GEMINI_API_KEY}"},
+          "model_name": {"value": "gemini-2.0-flash-exp"},
+          "acceptance_threshold": {"value": 0.85}
+        }
+      }
+    },
+    {
+      "id": "loop_control_1",
+      "type": "LoopControl",
+      "position": {"x": 1300, "y": 50},
+      "data": {
+        "component_name": "LoopControl",
+        "display_name": "Refinement Loop Control",
+        "inputs": {
+          "approved": {"connection": "response_validator_1.approved"},
+          "feedback": {"connection": "response_validator_1.feedback"},
+          "current_iteration": {"variable": "iteration_count"},
+          "max_iterations": {"value": 2}
+        },
+        "outputs": {
+          "continue_loop": "planner_iteration_1",
+          "exit_loop": "history_manager_2"
+        }
+      }
+    },
+    {
+      "id": "history_manager_2",
+      "type": "HistoryManager",
+      "position": {"x": 1500, "y": 50},
+      "data": {
+        "component_name": "HistoryManager",
+        "display_name": "Store Response",
+        "inputs": {
+          "session_id": {"connection": "session_input"},
+          "db_path": {"value": "${SQLITE_DB_PATH}"},
+          "current_message": {"connection": "input_node"},
+          "current_response": {"connection": "planner_iteration_1.output"}
+        }
+      }
+    },
+    {
+      "id": "greeting_response",
+      "type": "LLMNode",
+      "position": {"x": 900, "y": 200},
+      "data": {
+        "component_name": "GreetingHandler",
+        "display_name": "Greeting Response",
+        "inputs": {
+          "model_name": {"value": "gemini-2.0-flash-exp"},
+          "api_key": {"value": "${GEMINI_API_KEY}"},
+          "prompt": {
+            "template": "Generate a friendly greeting response.\n\nUser: {message}\n\nRespond warmly and professionally."
+          },
+          "message": {"connection": "input_node"},
+          "temperature": {"value": 0.8},
+          "max_tokens": {"value": 100}
+        }
+      }
+    },
+    {
+      "id": "fallback_response",
+      "type": "TextNode",
+      "position": {"x": 900, "y": 300},
+      "data": {
+        "component_name": "FallbackResponse",
+        "display_name": "Fallback",
+        "text": "I'm not sure I understand. Could you please rephrase your question?"
+      }
+    },
+    {
+      "id": "output_node",
+      "type": "Output",
+      "position": {"x": 1700, "y": 100},
+      "data": {
+        "component_name": "FinalOutput",
+        "inputs": {
+          "response": {"connection": "history_manager_2.history_context"},
+          "intent": {"connection": "intent_classifier_1.intent"},
+          "confidence": {"connection": "intent_classifier_1.confidence"},
+          "sources": {"connection": "rag_retriever_1.sources"},
+          "validation_data": {"connection": "response_validator_1.validation_data"}
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_1",
+      "source": "intent_classifier_1",
+      "target": "conditional_router_1",
+      "sourceHandle": "intent",
+      "targetHandle": "intent"
+    },
+    {
+      "id": "edge_2",
+      "source": "history_manager_1",
+      "target": "planner_iteration_1",
+      "sourceHandle": "history_context",
+      "targetHandle": "history"
+    },
+    {
+      "id": "edge_3",
+      "source": "rag_retriever_1",
+      "target": "planner_iteration_1",
+      "sourceHandle": "context",
+      "targetHandle": "context"
+    },
+    {
+      "id": "edge_4",
+      "source": "planner_iteration_1",
+      "target": "response_validator_1",
+      "sourceHandle": "output",
+      "targetHandle": "generated_response"
+    },
+    {
+      "id": "edge_5",
+      "source": "response_validator_1",
+      "target": "loop_control_1",
+      "sourceHandle": "approved",
+      "targetHandle": "approved"
+    },
+    {
+      "id": "edge_6",
+      "source": "loop_control_1",
+      "target": "history_manager_2",
+      "sourceHandle": "exit_loop",
+      "targetHandle": "current_response"
+    },
+    {
+      "id": "edge_7",
+      "source": "history_manager_2",
+      "target": "output_node",
+      "sourceHandle": "history_context",
+      "targetHandle": "response"
+    }
+  ],
+  "variables": {
+    "iteration_count": 0,
+    "session_id": "default_session"
+  },
+  "settings": {
+    "enable_async": true,
+    "timeout": 30000,
+    "retry_on_error": true,
+    "max_retries": 3
+  }
+}

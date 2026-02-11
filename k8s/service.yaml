@@ -1,0 +1,56 @@
+# Kubernetes Service for AI Agent application
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-agent-service
+  namespace: ai-agent
+  labels:
+    app: ai-agent
+    component: application
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-agent
+    component: application
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+---
+# ServiceAccount for the application
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-agent-sa
+  namespace: ai-agent
+  labels:
+    app: ai-agent
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-agent-redis
+  namespace: ai-agent
+  labels:
+    app: redis
+    component: cache
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+    component: cache
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP

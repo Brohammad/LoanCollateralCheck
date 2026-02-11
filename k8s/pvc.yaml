@@ -1,0 +1,50 @@
+# PersistentVolumeClaim for application data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ai-agent-data-pvc
+  namespace: ai-agent
+  labels:
+    app: ai-agent
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard  # Change based on your cluster
+---
+# PersistentVolumeClaim for logs
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ai-agent-logs-pvc
+  namespace: ai-agent
+  labels:
+    app: ai-agent
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard
+---
+# PersistentVolumeClaim for Redis data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data-pvc
+  namespace: ai-agent
+  labels:
+    app: redis
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: standard
