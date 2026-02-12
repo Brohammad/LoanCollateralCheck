@@ -26,6 +26,7 @@ from loan.models import (
 )
 from loan.valuation.aggregator import ValuationAggregator
 from loan.risk.risk_engine import RiskEngine
+from loan.decision import DecisionEngine
 
 
 def print_section(title: str):
@@ -166,38 +167,37 @@ async def demo_auto_loan():
     
     # 6. Loan decision
     print_section("LOAN DECISION")
+    print("🤖 Making intelligent loan decision...")
     
-    if risk_assessment.overall_risk_score < 0.5 and not risk_assessment.red_flags:
-        decision = "APPROVED ✅"
-        print(f"🎉 Loan Application {decision}")
-        print(f"\n   Approved Amount: ${application.requested_amount:,.2f}")
-        print(f"   Estimated Interest Rate: 6.5% APR")
-        print(f"   Recommended Term: 60 months")
-        print(f"   Estimated Monthly Payment: $488")
-        print(f"\n   Next Steps:")
-        print(f"   1. Complete income verification")
-        print(f"   2. Vehicle inspection")
-        print(f"   3. Insurance verification")
-        print(f"   4. Final documentation")
-    elif risk_assessment.overall_risk_score < 0.7 and not risk_assessment.red_flags:
-        decision = "CONDITIONAL APPROVAL ⚠️"
-        print(f"⚠️  Loan Application {decision}")
-        print(f"\n   Approved Amount: ${application.requested_amount * 0.9:,.2f} (90% of requested)")
-        print(f"   Interest Rate: 8.5% APR (higher due to risk)")
-        print(f"   Additional Requirements:")
-        print(f"   - Co-signer recommended")
-        print(f"   - Larger down payment (15%)")
-        print(f"   - Gap insurance required")
-    else:
-        decision = "REJECTED ❌"
-        print(f"❌ Loan Application {decision}")
-        print(f"\n   Reason: Risk level too high for automatic approval")
-        print(f"   Overall Risk Score: {risk_assessment.overall_risk_score:.3f}")
-        print(f"\n   Recommendations:")
-        print(f"   - Improve credit score")
-        print(f"   - Reduce existing debt")
-        print(f"   - Increase down payment")
-        print(f"   - Consider lower loan amount")
+    decision_engine = DecisionEngine()
+    decision = decision_engine.make_decision(application, risk_assessment, valuation)
+    
+    print(f"\n✅ DECISION: {decision.decision.value.upper()}")
+    
+    if decision.approved_amount:
+        print(f"\n   💰 Approved Amount: ${decision.approved_amount:,.2f}")
+        print(f"   📊 Interest Rate: {decision.interest_rate:.2f}% APR")
+        if hasattr(decision, 'term_months') and decision.term_months:
+            print(f"   📅 Loan Term: {decision.term_months} months")
+        if hasattr(decision, 'monthly_payment') and decision.monthly_payment:
+            print(f"   💵 Monthly Payment: ${decision.monthly_payment:.2f}")
+    
+    print(f"\n   🔍 KEY FACTORS:")
+    for factor in decision.key_factors[:5]:
+        print(f"   • {factor}")
+    
+    print(f"\n   📝 Reasoning:")
+    print(f"   {decision.reasoning[:200]}...")
+    
+    if decision.required_documents:
+        print(f"\n   📄 Required Documents:")
+        for doc in decision.required_documents[:5]:
+            print(f"   • {doc}")
+    
+    if decision.conditions:
+        print(f"\n   ⚠️  Conditions:")
+        for condition in decision.conditions[:3]:
+            print(f"   • {condition}")
     
     return application, valuation, risk_assessment
 

@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import logging
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -170,9 +171,9 @@ class EquipmentClient:
         useful_life_years: int,
         condition: Optional[str] = None
     ) -> float:
-        """Calculate depreciated equipment value.
+        """Calculate depreciated equipment value with random variation.
         
-        Uses declining balance depreciation method.
+        Uses declining balance depreciation method with realistic randomization.
         
         Args:
             purchase_price: Original purchase price
@@ -186,21 +187,28 @@ class EquipmentClient:
         """
         age_years = self._calculate_age_years(purchase_date)
         
-        # Declining balance depreciation
-        depreciated_value = purchase_price * ((1 - depreciation_rate) ** age_years)
+        # Add random variation to depreciation rate (+/- 2%)
+        actual_depreciation = depreciation_rate * random.uniform(0.98, 1.02)
+        
+        # Declining balance depreciation with random variation
+        depreciated_value = purchase_price * ((1 - actual_depreciation) ** age_years)
+        
+        # Add market fluctuation (+/- 5%)
+        market_variation = random.uniform(-0.05, 0.05)
+        depreciated_value = depreciated_value * (1 + market_variation)
         
         # Don't depreciate below 10% of original value (salvage value)
-        salvage_value = purchase_price * 0.10
+        salvage_value = purchase_price * random.uniform(0.08, 0.12)
         depreciated_value = max(depreciated_value, salvage_value)
         
-        # Condition adjustment
+        # Condition adjustment with random variation
         condition_multipliers = {
-            "excellent": 1.15,
-            "good": 1.00,
-            "fair": 0.85,
-            "poor": 0.70
+            "excellent": random.uniform(1.12, 1.18),
+            "good": random.uniform(0.98, 1.02),
+            "fair": random.uniform(0.82, 0.88),
+            "poor": random.uniform(0.68, 0.75)
         }
-        condition_mult = condition_multipliers.get(condition or "good", 1.0)
+        condition_mult = condition_multipliers.get(condition or "good", random.uniform(0.95, 1.05))
         
         return depreciated_value * condition_mult
     
@@ -241,27 +249,39 @@ class EquipmentClient:
         purchase_date: Optional[datetime],
         condition: Optional[str]
     ) -> Dict[str, Any]:
-        """Get generic equipment valuation for unknown types.
+        """Get generic equipment valuation with realistic randomization.
         
-        Uses conservative depreciation assumptions.
+        Uses conservative depreciation assumptions with random variation.
         """
-        logger.info(f"Using generic valuation for: {equipment_type}")
+        logger.info(f"Using generic valuation with randomization for: {equipment_type}")
         
-        # Generic depreciation (15% per year)
+        # Generic depreciation (15% per year) with random variation
+        depreciation_rate = random.uniform(0.13, 0.17)
+        
         if purchase_price and purchase_date:
             age_years = self._calculate_age_years(purchase_date)
-            estimated_value = purchase_price * ((1 - 0.15) ** age_years)
-            estimated_value = max(estimated_value, purchase_price * 0.10)  # Min 10%
+            estimated_value = purchase_price * ((1 - depreciation_rate) ** age_years)
+            
+            # Add market variation
+            market_variation = random.uniform(-0.08, 0.05)
+            estimated_value = estimated_value * (1 + market_variation)
+            
+            # Minimum salvage value
+            estimated_value = max(estimated_value, purchase_price * random.uniform(0.08, 0.12))
         else:
-            estimated_value = 50000  # Generic estimate
+            # Random estimate in range
+            estimated_value = random.uniform(30000, 80000)
+        
+        # Generate confidence based on available data
+        confidence = random.uniform(0.45, 0.55) if not purchase_price else random.uniform(0.55, 0.65)
         
         return {
             "equipment_type": equipment_type,
             "estimated_value": round(estimated_value, 2),
-            "low_estimate": round(estimated_value * 0.70, 2),
-            "high_estimate": round(estimated_value * 1.30, 2),
-            "confidence": 0.50,  # Lower confidence for generic valuation
+            "low_estimate": round(estimated_value * random.uniform(0.65, 0.75), 2),
+            "high_estimate": round(estimated_value * random.uniform(1.25, 1.35), 2),
+            "confidence": round(confidence, 2),
             "valuation_date": datetime.now().isoformat(),
-            "notes": "Generic valuation - manual appraisal recommended",
+            "notes": "Generic valuation with market variation - manual appraisal recommended",
             "source": "generic_model"
         }
