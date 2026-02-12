@@ -11,10 +11,10 @@ from typing import Dict, Any
 
 
 class Config:
-    """Configuration class for the AI Agent Workflow."""
+    """Configuration class for the Loan Collateral Assessment System."""
 
     # Google Gemini API
-    GOOGLE_API_KEY: str = os.environ.get("GOOGLE_API_KEY", "")
+    GOOGLE_API_KEY: str = os.environ.get("GOOGLE_API_KEY", "AIzaSyCG1HOOoMKUtY1IBltfYUfoPpdgAwC5-m8")
     GOOGLE_API_PROJECT: str = os.environ.get("GOOGLE_API_PROJECT", "")
 
     # Model settings
@@ -47,6 +47,25 @@ class Config:
 
     # Cache settings
     CACHE_TTL_SECONDS: int = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))
+
+    # Collateral valuation APIs
+    ZILLOW_API_KEY: str = os.environ.get("ZILLOW_API_KEY", "")
+    EDMUNDS_API_KEY: str = os.environ.get("EDMUNDS_API_KEY", "")
+    CARFAX_API_KEY: str = os.environ.get("CARFAX_API_KEY", "")
+    
+    # Document processing
+    GOOGLE_VISION_API_KEY: str = os.environ.get("GOOGLE_VISION_API_KEY", "")
+    
+    # Credit bureaus
+    EXPERIAN_API_KEY: str = os.environ.get("EXPERIAN_API_KEY", "")
+    EQUIFAX_API_KEY: str = os.environ.get("EQUIFAX_API_KEY", "")
+    
+    # Loan-specific settings
+    LTV_MAX_RATIO: float = float(os.environ.get("LTV_MAX_RATIO", "0.80"))
+    MIN_CREDIT_SCORE: int = int(os.environ.get("MIN_CREDIT_SCORE", "620"))
+    MAX_DTI_RATIO: float = float(os.environ.get("MAX_DTI_RATIO", "0.43"))
+    AUTO_APPROVAL_THRESHOLD: float = float(os.environ.get("AUTO_APPROVAL_THRESHOLD", "0.85"))
+    VALUATION_CACHE_TTL: int = int(os.environ.get("VALUATION_CACHE_TTL", "1800"))  # 30 minutes
 
     @classmethod
     def to_dict(cls) -> Dict[str, Any]:
